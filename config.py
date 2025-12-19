@@ -48,10 +48,8 @@ class Settings(BaseSettings):
     mongodb_uri: str = ""
     mongodb_database: str = "voicechatbot"
     
-    # TTS Configuration
-    tts_provider: str = "custom"  # Options: "custom" or "polly"
     
-    # AWS Polly Configuration
+    # AWS Polly Configuration (TTS)
     aws_access_key_id: str = ""
     aws_secret_access_key: str = ""
     aws_region: str = "us-east-1"

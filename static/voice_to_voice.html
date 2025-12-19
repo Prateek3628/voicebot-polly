@@ -409,6 +409,155 @@
             transform: translateX(-50%);
             font-weight: 300;
         }
+
+        /* Voice Selector */
+        .voice-selector-btn {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s ease;
+            z-index: 1000;
+        }
+
+        .voice-selector-btn:hover {
+            background: rgba(255, 255, 255, 0.15);
+            transform: scale(1.05);
+        }
+
+        .voice-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            backdrop-filter: blur(10px);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .voice-modal.show {
+            display: flex;
+        }
+
+        .voice-modal-content {
+            background: rgba(20, 20, 20, 0.95);
+            border-radius: 20px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            animation: modalSlideIn 0.3s ease;
+        }
+
+        @keyframes modalSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .voice-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .voice-modal-title {
+            color: white;
+            font-size: 20px;
+            font-weight: 500;
+        }
+
+        .voice-modal-close {
+            background: none;
+            border: none;
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 24px;
+            cursor: pointer;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            transition: all 0.3s ease;
+        }
+
+        .voice-modal-close:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+
+        .voice-category {
+            margin-bottom: 25px;
+        }
+
+        .voice-category-title {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+            font-weight: 500;
+        }
+
+        .voice-options {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+            gap: 10px;
+        }
+
+        .voice-option {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 12px;
+            color: rgba(255, 255, 255, 0.8);
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: center;
+            font-size: 14px;
+        }
+
+        .voice-option:hover {
+            background: rgba(255, 255, 255, 0.1);
+            border-color: rgba(0, 145, 255, 0.4);
+            transform: translateY(-2px);
+        }
+
+        .voice-option.selected {
+            background: rgba(0, 145, 255, 0.3);
+            border-color: rgba(0, 145, 255, 0.6);
+            color: white;
+        }
+
+        .current-voice {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 12px;
+            text-align: center;
+            margin-top: 15px;
+        }
     </style>
 </head>
 
@@ -421,6 +570,11 @@
             <div id="connectionStatus" class="connection-status disconnected">
                 Connecting...
             </div>
+
+            <!-- Voice Selector Button -->
+            <button id="voiceSelectorBtn" class="voice-selector-btn" title="Change Voice">
+                ⚙️
+            </button>
 
             <button id="voiceButton" class="voice-button" disabled>
                 🎤
@@ -450,9 +604,31 @@
         </div>
     </div>
 
+    <!-- Voice Selection Modal -->
+    <div id="voiceModal" class="voice-modal">
+        <div class="voice-modal-content">
+            <div class="voice-modal-header">
+                <div class="voice-modal-title">Select Voice</div>
+                <button id="closeVoiceModal" class="voice-modal-close">×</button>
+            </div>
+
+            <div class="voice-category">
+                <div class="voice-category-title">👨 Male Voices</div>
+                <div class="voice-options" id="maleVoices"></div>
+            </div>
+
+            <div class="voice-category">
+                <div class="voice-category-title">👩 Female Voices</div>
+                <div class="voice-options" id="femaleVoices"></div>
+            </div>
+
+            <div class="current-voice" id="currentVoice">Current: Salli</div>
+        </div>
+    </div>
+
     <script>
         // Initialize Socket.IO connection
-        const socket = io('http://51.38.38.66:8443');
+        const socket = io('http://0.0.0.0:5000');
 
         // DOM elements
         const voiceButton = document.getElementById('voiceButton');
@@ -465,6 +641,18 @@
         const chatMessages = document.getElementById('chatMessages');
         const chatInput = document.getElementById('chatInput');
         const chatSend = document.getElementById('chatSend');
+
+        // Voice selector elements
+        const voiceSelectorBtn = document.getElementById('voiceSelectorBtn');
+        const voiceModal = document.getElementById('voiceModal');
+        const closeVoiceModal = document.getElementById('closeVoiceModal');
+        const maleVoicesContainer = document.getElementById('maleVoices');
+        const femaleVoicesContainer = document.getElementById('femaleVoices');
+        const currentVoiceDisplay = document.getElementById('currentVoice');
+
+        // Current voice state
+        let currentVoice = 'Salli';
+        let availableVoices = { male: [], female: [] };
 
         // Audio recording
         let mediaRecorder = null;
@@ -735,6 +923,62 @@
             }
         });
 
+        // Voice selector functions
+        function loadVoices() {
+            socket.emit('get_voices');
+        }
+
+        function renderVoiceOptions() {
+            // Render male voices
+            maleVoicesContainer.innerHTML = '';
+            availableVoices.male.forEach(voice => {
+                const voiceBtn = document.createElement('div');
+                voiceBtn.className = 'voice-option';
+                if (voice === currentVoice) {
+                    voiceBtn.classList.add('selected');
+                }
+                voiceBtn.textContent = voice;
+                voiceBtn.onclick = () => selectVoice(voice);
+                maleVoicesContainer.appendChild(voiceBtn);
+            });
+
+            // Render female voices
+            femaleVoicesContainer.innerHTML = '';
+            availableVoices.female.forEach(voice => {
+                const voiceBtn = document.createElement('div');
+                voiceBtn.className = 'voice-option';
+                if (voice === currentVoice) {
+                    voiceBtn.classList.add('selected');
+                }
+                voiceBtn.textContent = voice;
+                voiceBtn.onclick = () => selectVoice(voice);
+                femaleVoicesContainer.appendChild(voiceBtn);
+            });
+
+            currentVoiceDisplay.textContent = `Current: ${currentVoice}`;
+        }
+
+        function selectVoice(voiceId) {
+            console.log('Selecting voice:', voiceId);
+            socket.emit('change_voice', { voice_id: voiceId });
+        }
+
+        // Voice selector event listeners
+        voiceSelectorBtn.addEventListener('click', () => {
+            voiceModal.classList.add('show');
+            loadVoices();
+        });
+
+        closeVoiceModal.addEventListener('click', () => {
+            voiceModal.classList.remove('show');
+        });
+
+        voiceModal.addEventListener('click', (e) => {
+            if (e.target === voiceModal) {
+                voiceModal.classList.remove('show');
+            }
+        });
+
         // Socket event handlers
         socket.on('connect', async () => {
             console.log('Connected to server');
@@ -831,6 +1075,29 @@
             setTimeout(() => {
                 statusText.textContent = 'Hold to speak';
             }, 3000);
+        });
+
+        // Voice selection event handlers
+        socket.on('available_voices', (data) => {
+            console.log('Received available voices:', data.voices);
+            availableVoices = data.voices;
+            renderVoiceOptions();
+        });
+
+        socket.on('voice_changed', (data) => {
+            console.log('Voice changed:', data);
+            currentVoice = data.voice_id;
+            currentVoiceDisplay.textContent = `Current: ${currentVoice}`;
+            renderVoiceOptions();
+
+            // Show brief confirmation
+            const prevText = statusText.textContent;
+            statusText.textContent = `Voice changed to ${currentVoice}`;
+            setTimeout(() => {
+                if (statusText.textContent.includes('Voice changed')) {
+                    statusText.textContent = prevText;
+                }
+            }, 2000);
         });
 
         // Initialize audio context on first interaction

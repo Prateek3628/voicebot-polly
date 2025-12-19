@@ -10,7 +10,6 @@ import asyncio
 import os
 import sys
 import time
-import requests
 import base64
 import io
 from pathlib import Path
@@ -94,75 +93,7 @@ class SpeechToTextHandler:
             raise
 
 
-class TextToVoiceHandler:
-    """Handles text-to-voice conversion and streaming."""
-    
-    def __init__(self):
-        """Initialize TTS handler."""
-        self.tts_url = "http://51.38.38.66:8081"
-    
-    async def text_to_speech_stream(self, text: str) -> Iterator[bytes]:
-        """
-        Convert text to speech and return audio stream.
-        
-        Args:
-            text: Text to convert to speech
-            
-        Yields:
-            Audio chunks as bytes
-        """
-        start = time.perf_counter()
-        
-        try:
-            # Make async request to TTS API
-            loop = asyncio.get_event_loop()
-            res = await loop.run_in_executor(
-                None,
-                lambda: requests.post(
-                    f"{self.tts_url}/predict",
-                    json={"text": text, "language": "en", "chunk_size": 20},
-                    stream=True,
-                    timeout=30  # Add timeout
-                )
-            )
-            
-            end = time.perf_counter()
-            logger.info(f"Time to make TTS POST request: {end-start}s")
-            
-            # Better error handling for different status codes
-            if res.status_code == 502:
-                logger.error(f"TTS API 502 Bad Gateway - Baseten service may be down or model not deployed")
-                raise Exception("Text-to-speech service is temporarily unavailable (502 Bad Gateway). Please try again later.")
-            elif res.status_code == 401:
-                logger.error(f"TTS API 401 Unauthorized - Invalid API key")
-                raise Exception("Text-to-speech authentication failed. Please check API key.")
-            elif res.status_code == 429:
-                logger.error(f"TTS API 429 Rate Limited")
-                raise Exception("Text-to-speech rate limit exceeded. Please try again later.")
-            elif res.status_code != 200:
-                logger.error(f"TTS API error {res.status_code}: {res.text}")
-                raise Exception(f"Text-to-speech service error ({res.status_code}). Please try again later.")
-            
-            first = True
-            for chunk in res.iter_content(chunk_size=512):
-                if first:
-                    end = time.perf_counter()
-                    logger.info(f"Time to first audio chunk: {end-start}s")
-                    first = False
-                if chunk:
-                    yield chunk
-            
-            logger.info(f"⏱️ TTS response elapsed: {res.elapsed}")
-            
-        except requests.exceptions.Timeout:
-            logger.error(f"TTS API timeout after 30 seconds")
-            raise Exception("Text-to-speech service timed out. Please try again.")
-        except requests.exceptions.ConnectionError:
-            logger.error(f"TTS API connection error")
-            raise Exception("Cannot connect to text-to-speech service. Please check your internet connection.")
-        except Exception as e:
-            logger.error(f"Error in text_to_speech_stream: {e}")
-            raise
+
 
 
 class AWSPollyTTSHandler:
@@ -192,6 +123,12 @@ class AWSPollyTTSHandler:
             self.voice_id = config.polly_voice_id
             self.output_format = config.polly_output_format
             self.closing = closing
+            
+            # Available voices organized by gender
+            self.available_voices = {
+                'male': ['Stephen', 'Joey', 'Justin', 'Matthew', 'Kevin'],
+                'female': ['Kendra', 'Kimberly', 'Ruth', 'Joanna', 'Salli', 'Gregory', 'Ivy', 'Danielle']
+            }
             
             logger.info(f"✅ AWS Polly TTS initialized (region: {config.aws_region}, voice: {self.voice_id})")
             
@@ -224,7 +161,8 @@ class AWSPollyTTSHandler:
                 lambda: self.polly.synthesize_speech(
                     Text=text,
                     OutputFormat='mp3',  # MP3 format for browser compatibility
-                    VoiceId=self.voice_id
+                    VoiceId=self.voice_id,
+                    Engine='neural'  # Use neural engine for better quality
                 )
             )
             
@@ -264,6 +202,39 @@ class AWSPollyTTSHandler:
         except Exception as e:
             logger.error(f"Error in AWS Polly text_to_speech_stream: {e}")
             raise Exception(f"Text-to-speech error: {str(e)}")
+    
+    def set_voice(self, voice_id: str) -> bool:
+        """
+        Change the voice for TTS.
+        
+        Args:
+            voice_id: AWS Polly voice ID
+            
+        Returns:
+            True if voice was changed successfully
+        """
+        try:
+            # Validate voice ID
+            all_voices = self.available_voices['male'] + self.available_voices['female']
+            if voice_id not in all_voices:
+                logger.warning(f"Invalid voice ID: {voice_id}. Using default voice.")
+                return False
+            
+            self.voice_id = voice_id
+            logger.info(f"✅ Voice changed to: {voice_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error changing voice: {e}")
+            return False
+    
+    def get_available_voices(self) -> dict:
+        """
+        Get list of available voices.
+        
+        Returns:
+            Dictionary of available voices by gender
+        """
+        return self.available_voices
 
 
 
@@ -644,6 +615,67 @@ async def voice_input(sid, data):
             
     except Exception as e:
         logger.error(f"Error handling voice input for {sid}: {e}")
+        await sio.emit('error', {
+            'message': str(e)
+        }, room=sid)
+
+
+@sio.event
+async def change_voice(sid, data):
+    """Handle voice change request from client."""
+    try:
+        if sid not in clients:
+            await sio.emit('error', {
+                'message': 'Session not found'
+            }, room=sid)
+            return
+        
+        # Extract voice ID
+        if isinstance(data, dict):
+            voice_id = data.get('voice_id', '') or data.get('voiceId', '')
+        else:
+            voice_id = str(data)
+        
+        if not voice_id:
+            await sio.emit('error', {
+                'message': 'No voice ID provided'
+            }, room=sid)
+            return
+        
+        logger.info(f"🎙️ Client {sid} requesting voice change to: {voice_id}")
+        
+        # Change the voice
+        success = tts_handler.set_voice(voice_id)
+        
+        if success:
+            await sio.emit('voice_changed', {
+                'voice_id': voice_id,
+                'message': f'Voice changed to {voice_id}'
+            }, room=sid)
+            logger.info(f"✅ Voice changed to {voice_id} for client {sid}")
+        else:
+            await sio.emit('error', {
+                'message': f'Invalid voice ID: {voice_id}'
+            }, room=sid)
+            
+    except Exception as e:
+        logger.error(f"Error changing voice for {sid}: {e}")
+        await sio.emit('error', {
+            'message': str(e)
+        }, room=sid)
+
+
+@sio.event
+async def get_voices(sid):
+    """Send available voices to client."""
+    try:
+        voices = tts_handler.get_available_voices()
+        await sio.emit('available_voices', {
+            'voices': voices
+        }, room=sid)
+        logger.info(f"📋 Sent available voices to client {sid}")
+    except Exception as e:
+        logger.error(f"Error sending voices to {sid}: {e}")
         await sio.emit('error', {
             'message': str(e)
         }, room=sid)
