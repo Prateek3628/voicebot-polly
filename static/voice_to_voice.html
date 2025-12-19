@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Assistant - TechGropse</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+            background: #000000;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        .container {
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .voice-interface {
+            background: transparent;
+            border-radius: 0;
+            padding: 0;
+            box-shadow: none;
+            text-align: center;
+            width: 100%;
+        }
+
+        h1 {
+            color: white;
+            margin-bottom: 10px;
+            font-size: 28px;
+            display: none;
+        }
+
+        .subtitle {
+            color: white;
+            margin-bottom: 30px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .connection-status {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            padding: 8px 16px;
+            border-radius: 50%;
+            font-size: 12px;
+            font-weight: bold;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .connected {
+            background-color: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .disconnected {
+            background-color: rgba(255, 255, 255, 0.1);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        /* Voice Button */
+        .voice-button {
+            width: 200px;
+            height: 200px;
+            border-radius: 50%;
+            border: none;
+            background: radial-gradient(circle at center, rgba(0, 145, 255, 0.8) 0%, rgba(0, 100, 200, 0.6) 50%, rgba(0, 50, 120, 0.4) 100%);
+            color: rgba(0, 180, 255, 0.9);
+            font-size: 64px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 80px rgba(0, 145, 255, 0.6), 0 0 120px rgba(0, 145, 255, 0.4), inset 0 0 40px rgba(0, 145, 255, 0.3);
+            margin: 0 auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: visible;
+        }
+
+        /* Wave effects */
+        .voice-button::before,
+        .voice-button::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 100%;
+            height: 100%;
+            border-radius: 50%;
+            border: 2px solid rgba(0, 145, 255, 0.4);
+            animation: wave 2s ease-out infinite;
+            pointer-events: none;
+        }
+
+        .voice-button::after {
+            animation-delay: 1s;
+        }
+
+        @keyframes wave {
+            0% {
+                transform: translate(-50%, -50%) scale(1);
+                opacity: 0.8;
+            }
+
+            100% {
+                transform: translate(-50%, -50%) scale(1.8);
+                opacity: 0;
+            }
+        }
+
+        .voice-button:hover:not(:disabled) {
+            transform: scale(1.05);
+            box-shadow: 0 0 100px rgba(0, 145, 255, 0.8), 0 0 140px rgba(0, 145, 255, 0.5), inset 0 0 50px rgba(0, 145, 255, 0.4);
+        }
+
+        .voice-button:active:not(:disabled) {
+            transform: scale(0.98);
+        }
+
+        .voice-button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .voice-button.recording {
+            background: radial-gradient(circle at center, rgba(0, 180, 255, 0.9) 0%, rgba(0, 145, 255, 0.7) 50%, rgba(0, 100, 200, 0.5) 100%);
+            animation: pulse 1.5s ease-in-out infinite;
+            box-shadow: 0 0 100px rgba(0, 145, 255, 0.8), 0 0 160px rgba(0, 145, 255, 0.6), inset 0 0 50px rgba(0, 145, 255, 0.4);
+        }
+
+        .voice-button.speaking {
+            background: radial-gradient(circle at center, rgba(0, 145, 255, 0.8) 0%, rgba(0, 100, 200, 0.6) 50%, rgba(0, 50, 120, 0.4) 100%);
+            animation: wobble 0.6s ease-in-out infinite;
+            box-shadow: 0 0 80px rgba(0, 145, 255, 0.6), 0 0 120px rgba(0, 145, 255, 0.4), inset 0 0 40px rgba(0, 145, 255, 0.3);
+        }
+
+        .voice-button.speaking::before,
+        .voice-button.speaking::after {
+            animation: wave 1.5s ease-out infinite;
+        }
+
+        .voice-button.speaking::after {
+            animation-delay: 0.75s;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                transform: scale(1);
+                box-shadow: 0 0 100px rgba(0, 145, 255, 0.8), 0 0 160px rgba(0, 145, 255, 0.6), inset 0 0 50px rgba(0, 145, 255, 0.4);
+            }
+
+            50% {
+                transform: scale(1.05);
+                box-shadow: 0 0 120px rgba(0, 145, 255, 1), 0 0 180px rgba(0, 145, 255, 0.8), inset 0 0 60px rgba(0, 145, 255, 0.5);
+            }
+        }
+
+        @keyframes wobble {
+
+            0%,
+            100% {
+                transform: rotate(0deg) scale(1);
+            }
+
+            25% {
+                transform: rotate(-3deg) scale(1.02);
+            }
+
+            75% {
+                transform: rotate(3deg) scale(1.02);
+            }
+        }
+
+        .status-text {
+            color: rgba(255, 255, 255, 0.9);
+            font-size: 18px;
+            margin-top: 60px;
+            min-height: 24px;
+            font-weight: 300;
+            letter-spacing: 0.5px;
+            transition: opacity 0.3s ease;
+        }
+
+        .status-text.hidden {
+            opacity: 0;
+        }
+
+        .transcription {
+            background: transparent;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            min-height: 60px;
+            color: rgba(255, 255, 255, 0.7);
+            font-style: italic;
+            display: none;
+            position: fixed;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            max-width: 80%;
+        }
+
+        .transcription.show {
+            display: block;
+        }
+
+        /* Chatbox - Hidden by default, shown when collecting info */
+        .chatbox {
+            background: rgba(15, 15, 15, 0.7);
+            border-radius: 20px;
+            padding: 20px;
+            margin-top: 30px;
+            max-height: 350px;
+            overflow-y: auto;
+            display: none;
+            transition: all 0.4s ease;
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 85%;
+            max-width: 450px;
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+        }
+
+        .chatbox.show {
+            display: block;
+            animation: slideInUp 0.4s ease;
+        }
+
+        @keyframes slideInUp {
+            from {
+                opacity: 0;
+                transform: translate(-50%, 20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translate(-50%, 0);
+            }
+        }
+
+        .chatbox::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .chatbox::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+        }
+
+        .chatbox::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 10px;
+        }
+
+        .chatbox::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.25);
+        }
+
+        .chatbox-header {
+            font-weight: 400;
+            color: rgba(255, 255, 255, 0.6);
+            margin-bottom: 15px;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .message {
+            margin-bottom: 10px;
+            padding: 10px 14px;
+            border-radius: 16px;
+            text-align: left;
+            font-size: 14px;
+            line-height: 1.4;
+            animation: messageSlideIn 0.3s ease;
+        }
+
+        @keyframes messageSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .user-message {
+            background-color: rgba(0, 145, 255, 0.3);
+            color: rgba(255, 255, 255, 0.95);
+            margin-left: 15%;
+            border: 1px solid rgba(0, 145, 255, 0.2);
+        }
+
+        .bot-message {
+            background-color: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.85);
+            margin-right: 15%;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .input-area {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .input-area input {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            font-size: 14px;
+            background: rgba(255, 255, 255, 0.05);
+            color: rgba(255, 255, 255, 0.9);
+            outline: none;
+            transition: all 0.3s ease;
+        }
+
+        .input-area input:focus {
+            border-color: rgba(0, 145, 255, 0.4);
+            background: rgba(255, 255, 255, 0.08);
+        }
+
+        .input-area input::placeholder {
+            color: rgba(255, 255, 255, 0.4);
+        }
+
+        .input-area button {
+            padding: 12px 24px;
+            background: linear-gradient(135deg, rgba(0, 145, 255, 0.6), rgba(0, 100, 200, 0.6));
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            border: 1px solid rgba(0, 145, 255, 0.3);
+        }
+
+        .input-area button:hover {
+            background: linear-gradient(135deg, rgba(0, 180, 255, 0.7), rgba(0, 145, 255, 0.7));
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0, 145, 255, 0.3);
+        }
+
+        .input-area button:active {
+            transform: translateY(0);
+        }
+
+        .audio-indicator {
+            display: none;
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 14px;
+            margin-top: 15px;
+            position: fixed;
+            top: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+        }
+
+        .audio-indicator.show {
+            display: block;
+        }
+
+        .help-text {
+            color: rgba(255, 255, 255, 0.5);
+            font-size: 14px;
+            margin-top: 0;
+            position: fixed;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            font-weight: 300;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="voice-interface">
+            <h1>🎤 Voice Assistant</h1>
+            <p class="subtitle">TechGropse Virtual Representative</p>
+
+            <div id="connectionStatus" class="connection-status disconnected">
+                Connecting...
+            </div>
+
+            <button id="voiceButton" class="voice-button" disabled>
+                🎤
+            </button>
+
+            <div id="statusText" class="status-text">
+                Hold to speak
+            </div>
+
+            <div id="transcription" class="transcription">
+                <strong>You said:</strong> <span id="transcriptionText"></span>
+            </div>
+
+            <div id="audioIndicator" class="audio-indicator" style="display: none;">
+            </div>
+
+            <!-- Chatbox - Only shown when collecting contact info -->
+            <div id="chatbox" class="chatbox">
+                <div class="chatbox-header">Contact Details</div>
+                <div id="chatMessages"></div>
+                <div class="input-area">
+                    <input type="text" id="chatInput" placeholder="Type here...">
+                    <button id="chatSend">Send</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        // Initialize Socket.IO connection
+        const socket = io('http://51.38.38.66:8443');
+
+        // DOM elements
+        const voiceButton = document.getElementById('voiceButton');
+        const statusText = document.getElementById('statusText');
+        const transcription = document.getElementById('transcription');
+        const transcriptionText = document.getElementById('transcriptionText');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const audioIndicator = document.getElementById('audioIndicator');
+        const chatbox = document.getElementById('chatbox');
+        const chatMessages = document.getElementById('chatMessages');
+        const chatInput = document.getElementById('chatInput');
+        const chatSend = document.getElementById('chatSend');
+
+        // Audio recording
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let mediaStream = null; // Persistent media stream
+
+        // Audio playback
+        let audioContext = null;
+        let nextPlayTime = 0;
+        let isPlayingAudio = false;
+        let activeSources = [];
+        let isFirstChunk = true;
+
+        // Initialize audio context
+        async function initAudioContext() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                console.log('Audio context initialized');
+            }
+        }
+
+        // Initialize microphone access (called once on connection)
+        async function initMicrophone() {
+            try {
+                if (!mediaStream) {
+                    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    console.log('Microphone access granted');
+                }
+            } catch (error) {
+                console.error('Error accessing microphone:', error);
+                statusText.textContent = 'Microphone access denied';
+                voiceButton.disabled = true;
+            }
+        }
+
+        // Start recording
+        async function startRecording() {
+            try {
+                // INTERRUPT: Stop any ongoing AI speech when user starts speaking
+                if (isPlayingAudio || activeSources.length > 0) {
+                    console.log('Interrupting AI speech - user is speaking');
+                    stopAllAudio();
+                }
+
+                // Ensure microphone is initialized
+                if (!mediaStream) {
+                    await initMicrophone();
+                    if (!mediaStream) return; // Failed to get microphone
+                }
+
+                mediaRecorder = new MediaRecorder(mediaStream, { mimeType: 'audio/webm' });
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    audioChunks.push(event.data);
+                };
+
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    await sendAudioToServer(audioBlob);
+                    // Don't stop the stream - keep it for next recording
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                voiceButton.classList.add('recording');
+                statusText.textContent = 'Recording...';
+                console.log('Recording started');
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                statusText.textContent = 'Error: Microphone access denied';
+            }
+        }
+
+        // Stop recording
+        function stopRecording() {
+            if (mediaRecorder && isRecording) {
+                mediaRecorder.stop();
+                isRecording = false;
+                voiceButton.classList.remove('recording');
+                statusText.textContent = 'Processing...';
+                console.log('Recording stopped');
+            }
+        }
+
+        // Send audio to server
+        async function sendAudioToServer(audioBlob) {
+            try {
+                // Check if audio blob has sufficient data
+                // Minimum size check to avoid sending empty/corrupted audio
+                if (audioBlob.size < 1000) {  // Less than 1KB is likely too short
+                    console.log('Audio too short, skipping transcription');
+                    statusText.textContent = 'Recording too short, please try again';
+                    voiceButton.disabled = false;
+                    return;
+                }
+
+                // Convert blob to base64
+                const reader = new FileReader();
+                reader.onloadend = () => {
+                    const base64Audio = reader.result.split(',')[1];
+                    socket.emit('voice_input', {
+                        audio: base64Audio,
+                        format: 'webm'
+                    });
+                };
+                reader.readAsDataURL(audioBlob);
+            } catch (error) {
+                console.error('Error sending audio:', error);
+                statusText.textContent = 'Error sending audio';
+            }
+        }
+
+        // Audio playback for MP3
+        let audioChunksBuffer = [];
+        let currentAudio = null;
+
+        // Play audio chunk (MP3 format)
+        async function playAudioChunk(base64Data) {
+            try {
+                // Add chunk to buffer
+                audioChunksBuffer.push(base64Data);
+            } catch (error) {
+                console.error('Error buffering audio:', error);
+            }
+        }
+
+        // Play complete MP3 audio
+        async function playCompleteAudio() {
+            if (audioChunksBuffer.length === 0) return;
+
+            try {
+                // Combine all chunks
+                const binaryStrings = audioChunksBuffer.map(chunk => atob(chunk));
+                const totalLength = binaryStrings.reduce((acc, str) => acc + str.length, 0);
+
+                const arrayBuffer = new Uint8Array(totalLength);
+                let offset = 0;
+
+                for (const binaryString of binaryStrings) {
+                    for (let i = 0; i < binaryString.length; i++) {
+                        arrayBuffer[offset++] = binaryString.charCodeAt(i);
+                    }
+                }
+
+                // Create blob and play
+                const blob = new Blob([arrayBuffer], { type: 'audio/mpeg' });
+                const audioUrl = URL.createObjectURL(blob);
+
+                currentAudio = new Audio(audioUrl);
+                currentAudio.play();
+
+                currentAudio.onended = () => {
+                    URL.revokeObjectURL(audioUrl);
+                    currentAudio = null;
+                    isPlayingAudio = false;
+                    voiceButton.textContent = '🎤';
+                    voiceButton.classList.remove('speaking');
+                    statusText.classList.remove('hidden');
+                    statusText.textContent = 'Hold to speak';
+                    voiceButton.disabled = false;
+                };
+
+                currentAudio.onerror = (e) => {
+                    console.error('Audio playback error:', e);
+                    URL.revokeObjectURL(audioUrl);
+                    currentAudio = null;
+                    isPlayingAudio = false;
+                };
+
+            } catch (error) {
+                console.error('Error playing complete audio:', error);
+                isPlayingAudio = false;
+            }
+        }
+
+        // Stop all audio
+        function stopAllAudio() {
+            // Stop current audio if playing
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio.currentTime = 0;
+                currentAudio = null;
+            }
+
+            // Clear buffer
+            audioChunksBuffer = [];
+
+            isPlayingAudio = false;
+            audioIndicator.classList.remove('show');
+
+            // Reset UI
+            voiceButton.textContent = '🎤';
+            voiceButton.classList.remove('speaking');
+            voiceButton.disabled = false;
+            statusText.classList.remove('hidden');
+            statusText.textContent = 'Hold to speak';
+
+            console.log('All audio stopped, button enabled');
+        }
+
+        // Add message to chatbox
+        function addChatMessage(content, type = 'bot') {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}-message`;
+            messageDiv.textContent = content;
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        // Send text message (for chatbox)
+        function sendTextMessage() {
+            const message = chatInput.value.trim();
+            if (!message) return;
+
+            // Stop any ongoing audio playback when user sends a new message
+            if (isPlayingAudio || activeSources.length > 0) {
+                console.log('Stopping audio - user submitted new text message');
+                stopAllAudio();
+            }
+
+            addChatMessage(message, 'user');
+            socket.emit('text_query', { text: message });
+            chatInput.value = '';
+        }
+
+        // Voice button event listeners
+        voiceButton.addEventListener('mousedown', () => {
+            console.log('Mousedown event - Button disabled:', voiceButton.disabled, 'Is playing:', isPlayingAudio);
+            // Always allow recording, even if button appears disabled
+            // This ensures interruption works properly
+            startRecording();
+        });
+
+        voiceButton.addEventListener('mouseup', () => {
+            if (isRecording) {
+                stopRecording();
+            }
+        });
+
+        voiceButton.addEventListener('mouseleave', () => {
+            if (isRecording) {
+                stopRecording();
+            }
+        });
+
+        // Touch support for mobile
+        voiceButton.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            console.log('Touchstart event - Button disabled:', voiceButton.disabled, 'Is playing:', isPlayingAudio);
+            // Always allow recording for interruption
+            startRecording();
+        });
+
+        voiceButton.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            if (isRecording) {
+                stopRecording();
+            }
+        });
+
+        // Chat input listeners
+        chatSend.addEventListener('click', sendTextMessage);
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendTextMessage();
+            }
+        });
+
+        // Socket event handlers
+        socket.on('connect', async () => {
+            console.log('Connected to server');
+            connectionStatus.textContent = '✅';
+            connectionStatus.className = 'connection-status connected';
+
+            // Initialize microphone on connection
+            await initMicrophone();
+
+            voiceButton.disabled = false;
+            statusText.textContent = 'Hold to speak';
+        });
+
+        socket.on('disconnect', () => {
+            console.log('Disconnected from server');
+            connectionStatus.textContent = '❌';
+            connectionStatus.className = 'connection-status disconnected';
+            voiceButton.disabled = true;
+            statusText.textContent = 'Disconnected';
+
+            // Clean up media stream on disconnect
+            if (mediaStream) {
+                mediaStream.getTracks().forEach(track => track.stop());
+                mediaStream = null;
+            }
+        });
+
+        socket.on('transcription_start', (data) => {
+            console.log('Transcription starting');
+            statusText.textContent = 'Transcribing...';
+        });
+
+        socket.on('transcription_complete', (data) => {
+            console.log('Transcription:', data.text);
+            // Don't show transcription - pure voice mode
+            // transcriptionText.textContent = data.text;
+            // transcription.classList.add('show');
+            statusText.textContent = '💭 Thinking...';
+        });
+
+        socket.on('text_response', (data) => {
+            console.log('Response:', data);
+            // Don't show text response - pure voice mode
+            // statusText.textContent = data.message;
+
+            // Handle chatbox visibility based on flag
+            if (data.show_chatbox) {
+                console.log('Showing chatbox - collecting:', data.current_field);
+                chatbox.classList.add('show');
+                addChatMessage(data.message, 'bot');
+                chatInput.focus();
+            } else {
+                console.log('Hiding chatbox - normal conversation');
+                chatbox.classList.remove('show');
+            }
+        });
+
+        socket.on('audio_start', (data) => {
+            console.log('Audio starting');
+            isPlayingAudio = true;
+
+            // Clear previous audio buffer
+            audioChunksBuffer = [];
+
+            // Change icon to speaker and add wobble animation
+            voiceButton.textContent = '🔊';
+            voiceButton.classList.add('speaking');
+
+            // Hide status text
+            statusText.classList.add('hidden');
+        });
+
+        socket.on('audio_chunk', async (data) => {
+            if (isPlayingAudio) {
+                await playAudioChunk(data.data);
+            }
+        });
+
+        socket.on('audio_end', async (data) => {
+            console.log('Audio ended, playing buffered MP3 audio');
+
+            // Play the complete buffered audio
+            await playCompleteAudio();
+
+            // Note: UI updates are handled in playCompleteAudio's onended callback
+        });
+
+        socket.on('error', (data) => {
+            console.error('Error:', data);
+            statusText.textContent = `Error: ${data.message}`;
+            voiceButton.disabled = false;
+
+            // Reset status after a delay
+            setTimeout(() => {
+                statusText.textContent = 'Hold to speak';
+            }, 3000);
+        });
+
+        // Initialize audio context on first interaction
+        document.addEventListener('click', initAudioContext);
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,463 @@
+# **TechGropse – Company Overview, FAQs & Privacy Policy (Combined Document)**
+
+## **1. Mobile App Development FAQs**
+
+### **What is the difference between native and cross-platform app development?**
+
+**Native applications** are built for a single platform using languages such as Swift (iOS) or Kotlin (Android). These applications deliver high performance, full access to device features, and a superior user experience.
+
+**Cross-platform applications** are built using frameworks such as Flutter or React Native, enabling deployment on multiple platforms with one codebase. This approach reduces development time and cost, with minor performance limitations and restricted access to some native capabilities.
+
+---
+
+### **How much does it cost to develop a mobile app?**
+
+Cost varies based on complexity:
+
+* **Simple application:** $10,000 – $50,000
+* **Medium complexity:** $50,000 – $150,000
+* **Complex application:** $200,000+
+
+Key cost determinants include feature set, number of platforms, UI/UX complexity, backend requirements, integrations, and maintenance expectations.
+
+---
+
+### **How long does it take to develop a mobile app?**
+
+Timeframe depends on project scope:
+
+* **Simple:** 2–3 months
+* **Medium:** 4–6 months
+* **Complex:** 9–12+ months
+
+Timeline covers research, UI/UX design, development, testing, deployment, and post-launch support.
+
+*TechGropse generally requires 3–9+ months depending on project size and customization demands.*
+
+---
+
+### **Should development target iOS, Android, or both?**
+
+Platform selection depends on audience and budget:
+
+* **iOS:** Strong presence in North America/Europe with higher spending patterns
+* **Android:** Broader global reach (Asia, Africa, LATAM)
+* **Both platforms:** Achievable through cross-platform development
+* **Native development for both:** Preferred for maximum performance if budget supports it
+
+---
+
+### **What technology stack is recommended?**
+
+**Frontend Options:**
+
+* Native: Swift, Kotlin
+* Cross-platform: Flutter, React Native
+
+**Backend Options:** Node.js, Python (Django/Flask/FastAPI), Java (Spring Boot)
+
+**Database Options:** PostgreSQL, MySQL, MongoDB, Firebase, DynamoDB
+
+**Cloud Platforms:** AWS, Google Cloud, Microsoft Azure
+
+**Common APIs:** Stripe, PayPal, Razorpay, Firebase, Auth0, Twilio, SendGrid
+
+---
+
+### **How important is UI/UX design?**
+
+UI/UX design plays a critical role—**88% of users avoid returning after a poor experience**. High-quality design:
+
+* Enhances retention and engagement
+* Improves conversion rates
+* Reduces rework expenses
+* Strengthens product identity
+* Builds trust and credibility
+
+---
+
+### **What is an MVP, and is it necessary?**
+
+An **MVP (Minimum Viable Product)** includes only essential features required to validate a concept.
+
+Advantages include:
+
+* Lower initial investment
+* Faster market entry
+* Real-world user feedback
+* Reduced risk
+* Iterative improvement based on usage data
+
+---
+
+### **Is a backend required for a mobile app?**
+
+A backend is required for applications involving:
+
+* User authentication
+* Cloud storage
+* Real-time updates
+* Payment processing
+* Analytics
+* Structured or updated content
+
+Simple offline utilities do not require a backend.
+Serverless alternatives: **Firebase**, **AWS Amplify**.
+
+---
+
+### **What are APIs and why are they important?**
+
+APIs enable communication between an application and external services.
+
+Common integrations include:
+
+* Payment gateways (Stripe, PayPal)
+* Social authentication
+* Maps/geolocation
+* Push notifications
+* SMS/Email services
+* KYC services
+* Weather/news APIs
+
+APIs accelerate development and expand functionality.
+
+---
+
+### **How can mobile app security be ensured?**
+
+Core security practices include:
+
+* SSL/TLS encryption
+* OAuth 2.0 / JWT authentication
+* Encryption of stored data
+* Compliance with **OWASP Mobile Security** guidelines
+* Secure session management
+* Input validation
+* Regular code audits
+* Updated libraries and dependencies
+* Backup strategies
+* GDPR/CCPA compliance
+
+Sensitive data should never be stored in plaintext.
+
+---
+
+### **How can a mobile app generate revenue?**
+
+Common monetization models include:
+
+1. In-app purchases
+2. Subscription plans
+3. Advertisements
+4. Freemium model
+5. Paid downloads
+6. Sponsorships
+7. Affiliate partnerships
+8. Consent-based anonymized data monetization
+
+---
+
+### **What testing is required before releasing an app?**
+
+Essential testing types:
+
+* Functional testing
+* Usability testing
+* Performance testing
+* Security testing
+* Compatibility testing
+* Network condition testing
+* Beta testing
+* Regression testing
+
+Tools: Appium, XCTest, Espresso
+
+---
+
+### **How is a mobile app published?**
+
+#### **iOS App Store**
+
+1. Apple Developer account ($99/year)
+2. Metadata and screenshots preparation
+3. Upload via App Store Connect
+4. App review: typically 1–3 days
+
+#### **Google Play Store**
+
+1. Google Play Developer account ($25 one-time)
+2. Upload of app bundle
+3. Listing preparation
+4. Publication (review often completed within hours)
+
+---
+
+### **What kind of maintenance is required after launch?**
+
+Ongoing maintenance typically includes:
+
+* OS version updates
+* Bug fixes
+* Security patches
+* Performance optimization
+* Feature enhancements
+* Server/database upkeep
+* API updates
+* Analytics monitoring
+* User-related support tasks
+
+Standard annual maintenance budgets are **15–20% of development cost**.
+
+---
+
+### **How can an app be scaled effectively?**
+
+**Infrastructure:** Cloud hosting, auto-scaling, load balancing, CDN
+**Database:** Query optimization, replication, caching (Redis), sharding
+**Architecture:** Microservices, message queues, rate limiting
+**Monitoring:** Logs, alerts, performance checks, load testing
+
+---
+
+## **2. TechGropse Company FAQs**
+
+### **Does TechGropse develop Android & iOS applications?**
+
+Yes. Development services cover both iOS and Android platforms.
+
+---
+
+### **Does TechGropse build AI-based applications?**
+
+Yes. TechGropse has more than 10 years of experience delivering AI-driven applications across industries.
+
+---
+
+### **Can TechGropse customize applications?**
+
+Yes. Applications are tailored to match unique business needs.
+
+---
+
+### **Is an NDA required?**
+
+NDA signing is encouraged before initiating a project.
+
+---
+
+### **Which industries benefit most from TechGropse services?**
+
+Industries served include:
+
+* Healthcare
+* Insurance
+* Pharmaceuticals
+* eCommerce
+* Retail
+* Education
+
+---
+
+### **Is source code provided?**
+
+Yes. Source code is provided after project approval and completion.
+
+---
+
+### **Are third-party integrations supported?**
+
+Yes. Integration support includes:
+
+* APIs
+* Payment gateways
+* CRM systems
+* ERP tools
+* Cloud platforms
+* AI/ML modules
+
+---
+
+### **Is the project budget negotiable?**
+
+Yes. Flexible models exist for both agile development and financial planning.
+
+---
+
+## **3. HR & Careers FAQs**
+
+### **What positions are currently open?**
+
+Available roles are listed on the Career Page:
+**[https://www.techgropse.com/career]**
+
+---
+
+### **How can a resume be submitted?**
+
+* Upload through the Career Page
+* Or email to **[hr@techgropse.com](mailto:hr@techgropse.com)**
+
+---
+
+### **What is the salary structure for app developers?**
+
+Questions can be sent to **[hr@techgropse.com](mailto:hr@techgropse.com)**
+
+---
+
+### **Are training programs offered?**
+
+Information is available via **[hr@techgropse.com](mailto:hr@techgropse.com)**
+
+---
+
+### **What kind of work environment is offered?**
+
+The environment is collaborative, inclusive, and innovation-driven with:
+
+* Open office spaces
+* Quiet zones
+* Modern meeting rooms
+* Breakout areas
+* Fully equipped kitchen
+
+The overall atmosphere is relaxed yet productive.
+
+---
+
+### **Are team-building activities conducted?**
+
+Yes. Activities include monthly lunches, quarterly outings, yearly retreats, hackathons, game nights, sports events, volunteer programs, and virtual sessions.
+
+---
+
+## **4. Privacy Policy**
+
+### **Transparency Regarding the Use of Personal Data**
+
+This document outlines the collection, usage, and handling of personal data strictly for online interactions.
+Offline data collection is not covered by this policy.
+
+This policy may be updated periodically.
+
+---
+
+### **Consent**
+
+Use of the TechGropse website signifies acceptance of this Privacy Policy.
+
+---
+
+### **Information Collected**
+
+The following information may be collected:
+
+* Name
+* Email address
+* Phone number
+* Company name
+* Address
+* Inquiry message and attachments
+
+Information may be disclosed to regulatory authorities when legally required.
+
+---
+
+### **Purpose of Data Usage**
+
+Collected data is used to:
+
+* Operate and enhance the website
+* Customize user interaction
+* Analyze visitor behavior
+* Improve services and features
+* Communicate updates, support responses, and promotional information
+* Detect and prevent fraudulent activity
+
+---
+
+### **Log File Usage**
+
+Automatically collected data includes:
+
+* IP address
+* Browser type
+* Internet service provider
+* Date/time stamps
+* Referrer URLs
+* Click counts
+
+This information is not linked to personal identity.
+
+---
+
+### **Cookies**
+
+Cookies are used to:
+
+* Store preferences
+* Track page interactions
+* Improve website personalization
+
+Types of cookies used:
+
+* Essential session cookies
+* Policy consent cookies
+* Functionality cookies
+
+Cookie settings can be adjusted through browser configuration.
+
+---
+
+### **Information Security**
+
+Industry-standard security measures are implemented, including SSL encryption for supported browsers.
+
+---
+
+### **Data Disclosure**
+
+TechGropse **does not sell or share** personal data with unrelated third parties.
+Trusted partners may assist with marketing, analytics, communication, or technical support under confidentiality agreements.
+
+---
+
+### **Third-Party Links**
+
+TechGropse is not responsible for privacy policies or content on external websites.
+
+---
+
+### **Children’s Privacy**
+
+Data from individuals under 13 years of age is not knowingly collected.
+Requests for removal of such data can be submitted using contact details provided.
+
+---
+
+### **Policy Revisions**
+
+Policy terms may be updated at any time. Regular review is recommended.
+
+---
+
+### **Definitions**
+
+* **User:** Any visitor to the website
+* **Company:** TechGropse Pvt. Ltd.
+* **Personal Data:** Information identifying an individual
+* **Cookies:** Small data files stored on a device
+* **Usage Data:** Automatically collected technical information
+
+---
+
+### **Contact Information**
+
+**Address:**
+G-02 Block, D 60, D Block, Sector 63, Noida, Uttar Pradesh 201301, India
+
+**Phone:** +91-9911138726
+**Email:** [sales@techgropse.com](mailto:sales@techgropse.com)
+
+---
