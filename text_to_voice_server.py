@@ -299,7 +299,8 @@ async def connect(sid, environ, auth=None):
         
         logger.info(f"✅ Session created for client {sid} with initial greeting")
         
-        # No automatic greeting - wait for user input
+        # Generate and stream audio for initial greeting
+        await stream_audio_to_client(sid, initial_message)
         
     except Exception as e:
         error_message = str(e)
