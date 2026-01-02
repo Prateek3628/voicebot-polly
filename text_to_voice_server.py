@@ -322,13 +322,20 @@ async def disconnect(sid):
         session_id = client_data['session_id']
         try:
             chatbot.end_session(session_id)  # Pass session_id
-        except:
-            pass
+        except Exception as e:
+            logger.error(f"Error ending session for {sid}: {e}")
         del clients[sid]
         logger.info(f"🗑️ Session cleaned up for client {sid}")
+    else:
+        logger.info(f"Client {sid} already cleaned up")
     
     # Clean up interruption tracking
     if sid in active_responses:
+        # Cancel any active response task
+        if 'task' in active_responses[sid]:
+            task = active_responses[sid]['task']
+            if not task.done():
+                task.cancel()
         del active_responses[sid]
 
 

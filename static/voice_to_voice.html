@@ -581,7 +581,7 @@
             </button>
 
             <div id="statusText" class="status-text">
-                Hold to speak
+                Please provide your information
             </div>
 
             <div id="transcription" class="transcription">
@@ -659,6 +659,9 @@
         let audioChunks = [];
         let isRecording = false;
         let mediaStream = null; // Persistent media stream
+        let isListening = false; // Track if mic is actively listening
+        let silenceTimeout = null;
+        let silenceDelay = 2000; // 2 seconds of silence before auto-sending
 
         // Audio playback
         let audioContext = null;
@@ -666,6 +669,12 @@
         let isPlayingAudio = false;
         let activeSources = [];
         let isFirstChunk = true;
+        
+        // Chatbox state
+        let isChatboxActive = false;
+        
+        // User info collection state
+        let userInfoCollected = false;
 
         // Initialize audio context
         async function initAudioContext() {
@@ -689,9 +698,15 @@
             }
         }
 
-        // Start recording
+        // Start recording with auto-stop on silence
         async function startRecording() {
             try {
+                // Don't allow recording if chatbox is active
+                if (isChatboxActive) {
+                    console.log('Chatbox is active, microphone disabled');
+                    return;
+                }
+
                 // INTERRUPT: Stop any ongoing AI speech when user starts speaking
                 if (isPlayingAudio || activeSources.length > 0) {
                     console.log('Interrupting AI speech - user is speaking');
@@ -717,15 +732,76 @@
                     // Don't stop the stream - keep it for next recording
                 };
 
-                mediaRecorder.start();
+                // Start recording with small chunks to enable silence detection
+                mediaRecorder.start(100); // Record in 100ms chunks
                 isRecording = true;
+                isListening = true;
                 voiceButton.classList.add('recording');
-                statusText.textContent = 'Recording...';
-                console.log('Recording started');
+                voiceButton.textContent = '🎤';
+                statusText.textContent = 'Listening...';
+                console.log('Recording started with auto-detection');
+                
+                // Start silence detection
+                startSilenceDetection();
             } catch (error) {
                 console.error('Error starting recording:', error);
                 statusText.textContent = 'Error: Microphone access denied';
             }
+        }
+        
+        // Detect silence and auto-stop recording
+        function startSilenceDetection() {
+            if (!mediaStream) return;
+            
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            const analyser = audioContext.createAnalyser();
+            const microphone = audioContext.createMediaStreamSource(mediaStream);
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            
+            microphone.connect(analyser);
+            analyser.fftSize = 2048;
+            
+            let silenceStart = Date.now();
+            let isSpeaking = false;
+            
+            function checkAudioLevel() {
+                if (!isRecording) {
+                    audioContext.close();
+                    return;
+                }
+                
+                analyser.getByteTimeDomainData(dataArray);
+                
+                // Calculate volume
+                let sum = 0;
+                for (let i = 0; i < dataArray.length; i++) {
+                    const normalized = (dataArray[i] - 128) / 128;
+                    sum += normalized * normalized;
+                }
+                const volume = Math.sqrt(sum / dataArray.length);
+                
+                // Threshold for speech detection (adjust as needed)
+                const speechThreshold = 0.02;
+                
+                if (volume > speechThreshold) {
+                    // Speech detected
+                    isSpeaking = true;
+                    silenceStart = Date.now();
+                } else if (isSpeaking) {
+                    // Check if silence duration exceeds threshold
+                    const silenceDuration = Date.now() - silenceStart;
+                    if (silenceDuration > silenceDelay) {
+                        console.log('Silence detected, auto-stopping recording');
+                        stopRecording();
+                        audioContext.close();
+                        return;
+                    }
+                }
+                
+                requestAnimationFrame(checkAudioLevel);
+            }
+            
+            checkAudioLevel();
         }
 
         // Stop recording
@@ -733,9 +809,24 @@
             if (mediaRecorder && isRecording) {
                 mediaRecorder.stop();
                 isRecording = false;
+                isListening = false;
                 voiceButton.classList.remove('recording');
                 statusText.textContent = 'Processing...';
                 console.log('Recording stopped');
+            }
+        }
+        
+        // Interrupt AI and start recording
+        function interruptAI() {
+            if (isPlayingAudio) {
+                console.log('User interrupted AI');
+                stopAllAudio();
+                // Start recording immediately after interrupt
+                setTimeout(() => {
+                    if (!isChatboxActive) {
+                        startRecording();
+                    }
+                }, 100);
             }
         }
 
@@ -748,6 +839,8 @@
                     console.log('Audio too short, skipping transcription');
                     statusText.textContent = 'Recording too short, please try again';
                     voiceButton.disabled = false;
+                    
+                    // Don't auto-restart after short recording
                     return;
                 }
 
@@ -813,8 +906,20 @@
                     voiceButton.textContent = '🎤';
                     voiceButton.classList.remove('speaking');
                     statusText.classList.remove('hidden');
-                    statusText.textContent = 'Hold to speak';
                     voiceButton.disabled = false;
+                    
+                    // Auto-enable microphone after AI finishes speaking (if chatbox not active)
+                    if (!isChatboxActive && userInfoCollected) {
+                        statusText.textContent = 'Listening...';
+                        // Automatically start listening again
+                        setTimeout(() => {
+                            if (!isRecording && !isChatboxActive && !isPlayingAudio) {
+                                startRecording();
+                            }
+                        }, 500);
+                    } else if (isChatboxActive) {
+                        statusText.textContent = 'Type your response';
+                    }
                 };
 
                 currentAudio.onerror = (e) => {
@@ -850,9 +955,14 @@
             voiceButton.classList.remove('speaking');
             voiceButton.disabled = false;
             statusText.classList.remove('hidden');
-            statusText.textContent = 'Hold to speak';
+            
+            if (!isChatboxActive && userInfoCollected) {
+                statusText.textContent = 'Listening...';
+            } else if (isChatboxActive) {
+                statusText.textContent = 'Type your response';
+            }
 
-            console.log('All audio stopped, button enabled');
+            console.log('All audio stopped');
         }
 
         // Add message to chatbox
@@ -875,43 +985,21 @@
                 stopAllAudio();
             }
 
+            // Stop recording if active
+            if (isRecording) {
+                stopRecording();
+            }
+
             addChatMessage(message, 'user');
             socket.emit('text_query', { text: message });
             chatInput.value = '';
         }
 
-        // Voice button event listeners
-        voiceButton.addEventListener('mousedown', () => {
-            console.log('Mousedown event - Button disabled:', voiceButton.disabled, 'Is playing:', isPlayingAudio);
-            // Always allow recording, even if button appears disabled
-            // This ensures interruption works properly
-            startRecording();
-        });
-
-        voiceButton.addEventListener('mouseup', () => {
-            if (isRecording) {
-                stopRecording();
-            }
-        });
-
-        voiceButton.addEventListener('mouseleave', () => {
-            if (isRecording) {
-                stopRecording();
-            }
-        });
-
-        // Touch support for mobile
-        voiceButton.addEventListener('touchstart', (e) => {
-            e.preventDefault();
-            console.log('Touchstart event - Button disabled:', voiceButton.disabled, 'Is playing:', isPlayingAudio);
-            // Always allow recording for interruption
-            startRecording();
-        });
-
-        voiceButton.addEventListener('touchend', (e) => {
-            e.preventDefault();
-            if (isRecording) {
-                stopRecording();
+        // Voice button event listeners - Only for interruption
+        voiceButton.addEventListener('click', () => {
+            console.log('Button clicked - Is playing:', isPlayingAudio);
+            if (isPlayingAudio) {
+                interruptAI();
             }
         });
 
@@ -921,6 +1009,26 @@
             if (e.key === 'Enter') {
                 sendTextMessage();
             }
+        });
+        
+        // Monitor when chatbox input is focused (disable mic)
+        chatInput.addEventListener('focus', () => {
+            console.log('Chat input focused - disabling microphone');
+            isChatboxActive = true;
+            if (isRecording) {
+                stopRecording();
+            }
+        });
+        
+        // Re-enable mic when chatbox loses focus and is hidden
+        chatInput.addEventListener('blur', () => {
+            // Check if chatbox is still visible
+            setTimeout(() => {
+                if (!chatbox.classList.contains('show')) {
+                    console.log('Chatbox hidden - re-enabling microphone');
+                    isChatboxActive = false;
+                }
+            }, 100);
         });
 
         // Voice selector functions
@@ -989,7 +1097,11 @@
             await initMicrophone();
 
             voiceButton.disabled = false;
-            statusText.textContent = 'Hold to speak';
+            statusText.textContent = 'Please provide your information';
+            
+            // Show chatbox initially for user info
+            // Wait for server to trigger chatbox display
+            console.log('Ready - waiting for user info collection');
         });
 
         socket.on('disconnect', () => {
@@ -998,6 +1110,11 @@
             connectionStatus.className = 'connection-status disconnected';
             voiceButton.disabled = true;
             statusText.textContent = 'Disconnected';
+
+            // Stop recording if active
+            if (isRecording) {
+                stopRecording();
+            }
 
             // Clean up media stream on disconnect
             if (mediaStream) {
@@ -1009,6 +1126,8 @@
         socket.on('transcription_start', (data) => {
             console.log('Transcription starting');
             statusText.textContent = 'Transcribing...';
+            // Keep button visible but not recording
+            voiceButton.classList.remove('recording');
         });
 
         socket.on('transcription_complete', (data) => {
@@ -1027,12 +1146,31 @@
             // Handle chatbox visibility based on flag
             if (data.show_chatbox) {
                 console.log('Showing chatbox - collecting:', data.current_field);
+                isChatboxActive = true;
+                userInfoCollected = false;
+                // Stop recording when chatbox appears
+                if (isRecording) {
+                    stopRecording();
+                }
                 chatbox.classList.add('show');
                 addChatMessage(data.message, 'bot');
                 chatInput.focus();
             } else {
                 console.log('Hiding chatbox - normal conversation');
+                isChatboxActive = false;
                 chatbox.classList.remove('show');
+                
+                // Mark that user info has been collected
+                if (!userInfoCollected) {
+                    userInfoCollected = true;
+                    // Auto-start recording after user info is collected
+                    setTimeout(() => {
+                        if (!isRecording && !isPlayingAudio) {
+                            console.log('User info collected, auto-starting recording');
+                            startRecording();
+                        }
+                    }, 500);
+                }
             }
         });
 
@@ -1043,12 +1181,14 @@
             // Clear previous audio buffer
             audioChunksBuffer = [];
 
-            // Change icon to speaker and add wobble animation
-            voiceButton.textContent = '🔊';
+            // Change to interrupt button
+            voiceButton.textContent = '⏸️';
             voiceButton.classList.add('speaking');
+            voiceButton.classList.remove('recording');
 
-            // Hide status text
-            statusText.classList.add('hidden');
+            // Show interrupt message
+            statusText.classList.remove('hidden');
+            statusText.textContent = 'Click to interrupt';
         });
 
         socket.on('audio_chunk', async (data) => {

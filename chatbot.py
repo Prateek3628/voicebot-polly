@@ -70,6 +70,12 @@ class ChatBot:
         """
         try:
             if session_id:
+                # Check if session exists before ending
+                session_info = self.session_manager.get_session_info(session_id)
+                if not session_info:
+                    logger.info(f"Session {session_id} already ended or doesn't exist")
+                    return
+                
                 # Get conversation history and user details before clearing
                 conversation_history = self.session_manager.get_session_history(session_id)
                 user_details = self.session_manager.get_contact_form_data(session_id)
