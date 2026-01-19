@@ -54,7 +54,7 @@ class ChatBot:
             logger.info(f"Started new session: {session_id}")
             
             # Return welcome message asking for name
-            initial_message = "Hello! Welcome to TechGropse. Before we begin, I'd like to know you better. What's your name?"
+            initial_message = "Hello! Welcome to TechGropse, I am anup, your virtual assistant. Before we begin, I'd like to know you better. What's your name?"
             return session_id, initial_message
             
         except Exception as e:
@@ -128,6 +128,12 @@ class ChatBot:
             # Check if we're in contact form flow (including initial collection)
             form_state = self.session_manager.get_contact_form_state(session_id)
             
+            # If form was just completed, reset to IDLE for next query
+            if form_state == ContactFormState.COMPLETED.value:
+                self.session_manager.set_contact_form_state(session_id, ContactFormState.IDLE.value)
+                form_state = ContactFormState.IDLE.value
+                logger.info(f"Contact form completed, resetting to IDLE for session {session_id}")
+            
             if form_state != ContactFormState.IDLE.value:
                 # Handle contact form step
                 form_data = self.session_manager.get_contact_form_data(session_id)
@@ -167,21 +173,24 @@ class ChatBot:
             # Check if user explicitly requested contact (new intent type)
             if intent == 'contact_request':
                 # User explicitly asked to be contacted
-                # Check if we already have user details
-                user_details = self.session_manager.get_contact_form_data(session_id)
+                user_details = self.session_manager.get_contact_form_data(session_id) or {}
+                user_details['original_query'] = user_input
                 
-                if user_details and user_details.get('name') and user_details.get('email') and user_details.get('mobile'):
-                    # We have user details, only ask for availability
-                    user_details['original_query'] = user_input
+                # Check if user has existing schedule
+                has_schedule = user_details.get('preferred_datetime') and user_details.get('timezone')
+                
+                if has_schedule:
+                    # User has existing schedule, ask if they want to keep or change
+                    existing_datetime = user_details.get('preferred_datetime')
+                    existing_timezone = user_details.get('timezone')
+                    self.session_manager.set_contact_form_data(session_id, user_details)
+                    self.session_manager.set_contact_form_state(session_id, ContactFormState.ASKING_SCHEDULE_CHANGE.value)
+                    response = f"Sure! You previously scheduled a call for {existing_datetime} ({existing_timezone}). Would you like to keep this time or change it?"
+                else:
+                    # No existing schedule, ask for availability
                     self.session_manager.set_contact_form_data(session_id, user_details)
                     self.session_manager.set_contact_form_state(session_id, ContactFormState.COLLECTING_DATETIME.value)
-                    response = f"Great! I'll connect you with our team. When would be the best time for them to reach out to you? Please provide your preferred date and time."
-                else:
-                    # Missing user details - collect them first
-                    form_data = {'original_query': user_input}
-                    self.session_manager.set_contact_form_data(session_id, form_data)
-                    self.session_manager.set_contact_form_state(session_id, ContactFormState.COLLECTING_NAME.value)
-                    response = ContactFormHandler.ask_for_contact_consent(user_input, is_explicit_request=True)
+                    response = "Great! I'll connect you with our team. When would be the best time for them to reach out to you? Please provide your preferred date and time."
                 
                 # Append bot response to history
                 try:
@@ -194,9 +203,12 @@ class ChatBot:
 
             # Check if contact form should be triggered (fallback detection)
             if response == "TRIGGER_CONTACT_FORM":
-                # Store original query in form data
-                form_data = {'original_query': user_input}
-                self.session_manager.set_contact_form_data(session_id, form_data)
+                # Get existing form data (may have contact info from initial collection)
+                existing_form_data = self.session_manager.get_contact_form_data(session_id) or {}
+                
+                # Add/update original query while preserving existing contact info
+                existing_form_data['original_query'] = user_input
+                self.session_manager.set_contact_form_data(session_id, existing_form_data)
                 
                 # Set state to asking consent
                 self.session_manager.set_contact_form_state(session_id, ContactFormState.ASKING_CONSENT.value)
