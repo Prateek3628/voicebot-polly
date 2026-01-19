@@ -24,6 +24,7 @@ class IntentType(Enum):
     CASUAL_CHAT = "casual_chat"  # Casual conversational responses like "I'm doing great"
     FOLLOWUP = "followup"
     CONTACT_REQUEST = "contact_request"
+    FEEDBACK = "feedback"  # User wants to share feedback/message with team
     QUERY = "query"
     GOODBYE = "goodbye"
     UNCLEAR = "unclear"
@@ -38,6 +39,7 @@ class ContactFormState(Enum):
     INITIAL_COLLECTING_PHONE = "initial_collecting_phone"
     # Connect with team - only collect availability
     ASKING_CONSENT = "asking_consent"
+    ASKING_SCHEDULE_CHANGE = "asking_schedule_change"  # Ask if user wants to keep or change existing schedule
     COLLECTING_DATETIME = "collecting_datetime"
     COLLECTING_TIMEZONE = "collecting_timezone"
     # Legacy states (for backward compatibility)
@@ -109,14 +111,14 @@ class ChatbotAgent:
         
         # Create the intent classification agent (for reference, not used in new implementation)
         self.intent_agent = Agent(
-            role='Alicia - Virtual Representative of TechGropse',
-            goal='As Alicia, represent TechGropse and help users with all aspects of the company - services, pricing, privacy, careers, and general inquiries',
-            backstory="""You are Alicia, the official virtual representative of TechGropse, speaking on behalf of the company. 
+            role='Anup - Virtual Representative of TechGropse',
+            goal='As Anup, represent TechGropse and help users with all aspects of the company - services, pricing, projects, capabilities, and general inquiries',
+            backstory="""You are Anup, the official virtual representative of TechGropse, speaking on behalf of the company. 
             You help users with everything related to TechGropse - app development services, pricing, timelines, 
-            privacy policy, data practices, career opportunities, and general company information. You always speak 
-            as 'we' when referring to TechGropse (e.g., 'we develop', 'our services', 'we offer'). You are friendly, 
+            projects, capabilities, and general company information. You always speak as 'we at TechGropse' when 
+            referring to the company (e.g., 'we at TechGropse develop', 'our services', 'we offer'). You are friendly, 
             professional, knowledgeable, and enthusiastic about helping users with any questions about TechGropse. 
-            When greeting users, you introduce yourself as Alicia from TechGropse, your virtual representative.""",
+            When greeting users, you introduce yourself as Anup from TechGropse, your virtual representative.""",
             verbose=False,
             allow_delegation=False,
             llm=self.llm
@@ -143,25 +145,32 @@ class ChatbotAgent:
    - "me too", "same here", "that's nice"
    - Friendly acknowledgments that don't require specific action
 3. FOLLOWUP - user wants more details/information about the previous topic (phrases like "more info", "tell me more", "need more details", "elaborate", etc.)
-4. CONTACT_REQUEST - user explicitly wants to be contacted or connected with the team (phrases like "connect me", "contact me", "reach out", "get in touch", "call me", "email me", "have someone contact me", etc.)
-5. QUERY - user is asking a specific question about privacy policy, data collection, cookies, services, etc.
-6. GOODBYE - user is ending the conversation. This includes ANY expression of thanks, satisfaction, or ending like: "thank you", "thanks", "ok thank you", "that's all", "goodbye", "bye", "see you", "appreciate it", "perfect", "great thanks", "awesome", "all good", "done", "finished", etc.
-7. UNCLEAR - unclear or ambiguous input
+4. CONTACT_REQUEST - user explicitly wants to be contacted by someone from the team (phrases like "connect me", "contact me", "reach out to me", "get in touch with me", "call me", "email me", "have someone contact me", "I need a callback", etc.)
+5. FEEDBACK - user wants to share feedback, information, or a message with the team (phrases like "send this to your team", "tell your team", "convey to team", "share this with team", "let them know", "I want to share", "pass this along", etc.)
+6. QUERY - user is asking a specific question about services, projects, capabilities, etc. This INCLUDES questions about the assistant's identity like "who are you?", "what is your name?", "tell me about yourself", etc.
+7. GOODBYE - user is ending the conversation. This includes ANY expression of thanks, satisfaction, or ending like: "thank you", "thanks", "ok thank you", "that's all", "goodbye", "bye", "see you", "appreciate it", "perfect", "great thanks", "awesome", "all good", "done", "finished", etc.
+8. UNCLEAR - unclear or ambiguous input
 
 User input: "{user_input}"
 
 IMPORTANT DISTINCTIONS:
 - "Hi, how are you?" = GREETING (initial contact with well-being question)
 - "How are you?" (alone, as follow-up) = CASUAL_CHAT (casual conversation)
+- "Who are you?" = QUERY (asking about the assistant's identity - needs information lookup)
+- "What is your name?" = QUERY (asking about the assistant's identity)
+- "Tell me about yourself" = QUERY (asking about the assistant)
 - "I'm doing well" = CASUAL_CHAT
 - "Tell me more" = FOLLOWUP
+- "Contact me" or "Have someone reach out to me" = CONTACT_REQUEST (they want to BE contacted)
+- "Send this to your team" or "Tell your team about this" = FEEDBACK (they want to SHARE info)
 - "Thanks" = GOODBYE
 
 Be VERY sensitive to goodbye hints - if there's ANY indication the user is satisfied or ending the conversation, classify as GOODBYE.
-If the user explicitly asks to be contacted/connected, classify as CONTACT_REQUEST.
+Distinguish between CONTACT_REQUEST (user wants to be contacted) and FEEDBACK (user wants to share info with team).
 If the user is just making casual conversation or acknowledgments, classify as CASUAL_CHAT.
+ANY question about the assistant's identity (who/what/name/yourself) should be QUERY.
 
-Respond with ONLY the category name (GREETING, CASUAL_CHAT, FOLLOWUP, CONTACT_REQUEST, QUERY, GOODBYE, or UNCLEAR):"""
+Respond with ONLY the category name (GREETING, CASUAL_CHAT, FOLLOWUP, CONTACT_REQUEST, FEEDBACK, QUERY, GOODBYE, or UNCLEAR):"""
 
             response = self.llm.invoke(prompt)
             intent_text = response.content.strip().upper() if hasattr(response, 'content') else str(response).strip().upper()
@@ -175,6 +184,8 @@ Respond with ONLY the category name (GREETING, CASUAL_CHAT, FOLLOWUP, CONTACT_RE
                 return IntentType.FOLLOWUP
             elif 'CONTACT' in intent_text:  # Catches CONTACT_REQUEST
                 return IntentType.CONTACT_REQUEST
+            elif 'FEEDBACK' in intent_text:
+                return IntentType.FEEDBACK
             elif 'QUERY' in intent_text:
                 return IntentType.QUERY
             elif 'GOODBYE' in intent_text:
@@ -224,62 +235,41 @@ Respond with ONLY the category name (GREETING, CASUAL_CHAT, FOLLOWUP, CONTACT_RE
                 'how\'s it going', 'how is it going', 'how are things',
             ])
             
-            prompt = f"""You are Alicia, a friendly representative at TechGropse.
+            prompt = f"""You are Anup, a friendly representative at TechGropse.
 
 The user just greeted you with: "{user_input}"
 
-Respond warmly and naturally based on what they said. Vary your greetings to feel fresh and human:
+CRITICAL: Keep your greeting to ONE SHORT SENTENCE only.
 
 IF they asked about YOUR well-being (e.g., "Hi, how are you?", "Hello, how's it going?"):
-1. Say how YOU are doing enthusiastically - vary the response:
-   * "I'm doing great!"
-   * "I'm wonderful, thanks!"
-   * "Doing fantastic!"
-   * "I'm having a great day!"
-2. Ask THEM back naturally:
-   * "How about you?"
-   * "And you?"
-   * "How are you doing?"
-   * "How's your day going?"
-3. Briefly introduce yourself and offer help
-4. Keep it to 1-2 sentences total
+- Respond with: "I'm doing great, thanks for asking! How about you?"
+- Or: "Doing wonderful, thanks! How are you?"
+- Keep it to ONE sentence
 
 IF they just said a simple greeting (e.g., "Hi", "Hello", "Hey"):
-1. Greet them back warmly - vary your response:
-   * "Hey!"
-   * "Hi there!"
-   * "Hello!"
-   * "Hey there!"
-2. Introduce yourself as Alicia from TechGropse
-3. Offer to help - vary the phrasing:
-   * "I'm here to help with anything you need!"
-   * "What can I help you with today?"
-   * "How can I help you today?"
-   * "I'd love to help with whatever you need!"
-4. Keep it brief and friendly (1-2 sentences)
+- Respond with: "Hi! I'm Anup from TechGropse. How can I help you?"
+- Or: "Hey! I'm Anup from TechGropse. What can I help you with?"
+- Or: "Hello! I'm Anup from TechGropse, here to help!"
+- Keep it to ONE SHORT sentence
 
 Examples:
-- User: "Hi, how are you?" -> "Hi there! I'm doing wonderful, thanks! How about you? I'm Alicia from TechGropse, happy to help with whatever you need!"
-- User: "Hello, how's it going?" -> "Hey! Doing fantastic, thanks for asking! How's your day going? I'm Alicia from TechGropse - what can I help you with?"
-- User: "Hi" -> "Hey! I'm Alicia from TechGropse, and I'm here to help with anything you need!"
-- User: "Hello" -> "Hi there! I'm Alicia from TechGropse. What can I help you with today?"
+- User: "Hi, how are you?" -> "I'm doing great, thanks! How about you?"
+- User: "Hello" -> "Hi! I'm Anup from TechGropse. How can I help you?"
+- User: "Hi" -> "Hey! I'm Anup from TechGropse. What can I help you with?"
 
 Key points:
-- ONLY reciprocate if they asked about your well-being
-- If they just said 'Hi' or 'Hello', DON'T ask how they are
-- Vary your greetings to avoid sounding robotic
-- Introduce yourself as Alicia from TechGropse
-- Mention you can help with anything (not just privacy)
-- Use 'we', 'our', 'us' for TechGropse
-- Be conversational and upbeat (1-2 sentences max)
+- MUST be ONE SHORT sentence only
+- Be warm but concise
+- Introduce yourself as Anup from TechGropse
+- Use 'we at TechGropse', 'our', 'us' when referring to the company
 
-Generate a natural, warm greeting as Alicia:"""
+Generate a SHORT one-sentence greeting as Anup:"""
 
             response = self.llm.invoke(prompt)
             return response.content.strip() if hasattr(response, 'content') else str(response).strip()
         except Exception as e:
             logger.error(f"Error generating greeting: {e}")
-            return "Hello! I'm Alicia from TechGropse, and I'm here to help you with any questions about our privacy policy. What would you like to know?"
+            return "Hi! I'm Anup from TechGropse. How can I help you?"
     
     def handle_casual_chat(self, user_input: str) -> str:
         """
@@ -292,7 +282,7 @@ Generate a natural, warm greeting as Alicia:"""
             Natural, friendly acknowledgment
         """
         try:
-            prompt = f"""You are Alicia, a friendly representative at TechGropse.
+            prompt = f"""You are Anup, a friendly representative at TechGropse.
 
 The user just said: "{user_input}"
 
@@ -336,10 +326,10 @@ Key points:
 - If they ask about YOUR well-being, ALWAYS ask them back
 - Vary your responses to avoid sounding robotic
 - Be conversational and warm
-- Use 'we', 'our', 'us' for TechGropse
+- Use 'we at TechGropse', 'our', 'us' when referring to the company
 - Keep it brief (1-2 sentences)
 
-Generate a warm, natural response as Alicia:"""
+Generate a warm, natural response as Anup:"""
 
             response = self.llm.invoke(prompt)
             return response.content.strip() if hasattr(response, 'content') else str(response).strip()
@@ -355,23 +345,129 @@ Generate a warm, natural response as Alicia:"""
             Goodbye message
         """
         try:
-            prompt = """You are Alicia, a friendly privacy specialist at TechGropse.
+            prompt = """You are Anup, a friendly representative at TechGropse.
 
 A user is saying goodbye. Respond warmly like saying bye to a friend - thank them for chatting and 
-let them know you're always around if they need anything. Use 'we', 'our', 'us' for TechGropse. 
+let them know you're always around if they need anything. Use 'we at TechGropse', 'our', 'us' when referring to the company. 
 Be friendly and genuine (1-2 sentences).
 
 Examples:
-- "Thanks for chatting! Feel free to reach out anytime you have questions - I'm always here to help!"
-- "It was great talking with you! Don't hesitate to come back if you need anything else."
+- "Thanks for chatting! Feel free to reach out anytime - we at TechGropse are always here to help!"
+- "It was great talking with you! Don't hesitate to come back if you need anything else from us at TechGropse."
 
-Generate a warm goodbye as Alicia:"""
+Generate a warm goodbye as Anup:"""
 
             response = self.llm.invoke(prompt)
             return response.content.strip() if hasattr(response, 'content') else str(response).strip()
         except Exception as e:
             logger.error(f"Error generating goodbye: {e}")
-            return "Thank you for your questions! If you need any more information, feel free to ask anytime. Have a great day!"
+            return "Thank you for your questions! If you need any more information, feel free to reach out anytime. We at TechGropse are always here to help!"
+    
+    def handle_feedback(self, user_input: str) -> str:
+        """
+        Generate a simple confirmation for user feedback or messages to be shared with the team.
+        
+        Args:
+            user_input: The user's feedback or message
+            
+        Returns:
+            Confirmation message
+        """
+        try:
+            prompt = f"""You are Anup, a friendly representative at TechGropse.
+
+The user wants to share some feedback or information with the team: "{user_input}"
+
+Respond with a simple, warm confirmation that:
+1. Acknowledges you understood their message
+2. Confirms you'll convey it to the team
+3. Uses 'we at TechGropse', 'our', 'us' when referring to the company
+4. Is brief and reassuring (1-2 sentences)
+
+Examples:
+- "Ok sure, I understood and I will convey this to my team at TechGropse!"
+- "Got it! I'll make sure to pass this along to our team."
+- "Perfect, I'll share this with the team right away!"
+
+Generate a brief confirmation as Anup:"""
+
+            response = self.llm.invoke(prompt)
+            return response.content.strip() if hasattr(response, 'content') else str(response).strip()
+        except Exception as e:
+            logger.error(f"Error generating feedback response: {e}")
+            return "Ok sure, I understood and I will convey this to my team at TechGropse!"
+    
+    def is_identity_question(self, user_input: str) -> bool:
+        """
+        Check if the user is asking about the assistant's identity.
+        
+        Args:
+            user_input: User's message
+            
+        Returns:
+            True if it's an identity question, False otherwise
+        """
+        user_input_lower = user_input.lower().strip()
+        
+        # Identity question patterns
+        identity_patterns = [
+            'who are you',
+            'what are you',
+            'what is your name',
+            "what's your name",
+            'whats your name',
+            'tell me about yourself',
+            'introduce yourself',
+            'who am i talking to',
+            'who am i speaking to',
+            'are you a bot',
+            'are you human',
+            'are you ai',
+            'are you a robot',
+            'what can you do',
+            'what do you do',
+            'your name',
+            'who is this',
+            'who is anup',
+            'are you anup',
+        ]
+        
+        return any(pattern in user_input_lower for pattern in identity_patterns)
+    
+    def handle_identity_question(self, user_input: str) -> str:
+        """
+        Handle identity questions directly without RAG lookup.
+        
+        Args:
+            user_input: User's identity question
+            
+        Returns:
+            Response about the assistant's identity
+        """
+        try:
+            prompt = f"""You are Anup, TechGropse's Virtual AI Assistant.
+
+The user is asking about your identity: "{user_input}"
+
+Respond naturally and informatively. Here are key facts about yourself:
+- Your name is Anup
+- You are TechGropse's Virtual AI Assistant
+- You help users learn about TechGropse's services, projects, and capabilities
+- You can answer questions about mobile app development, AI solutions, and company information
+- You can connect users with the TechGropse team when needed
+- You're available 24/7 to assist
+- You're powered by advanced AI technology
+
+Keep your response brief, friendly, and conversational (2-3 sentences max).
+Use 'we at TechGropse', 'our', 'us' when referring to the company.
+
+Generate a natural response as Anup:"""
+
+            response = self.llm.invoke(prompt)
+            return response.content.strip() if hasattr(response, 'content') else str(response).strip()
+        except Exception as e:
+            logger.error(f"Error generating identity response: {e}")
+            return "Hi! I'm Anup, TechGropse's Virtual AI Assistant. I'm here to help you learn about our services, projects, and answer any questions you might have about mobile app development and AI solutions!"
     
     def handle_unclear(self, user_input: str) -> str:
         """
@@ -384,29 +480,29 @@ Generate a warm goodbye as Alicia:"""
             Clarification message
         """
         try:
-            prompt = f"""You are Alicia, a friendly and patient privacy specialist at TechGropse.
+            prompt = f"""You are Anup, a friendly and patient representative at TechGropse.
 
 A user said: "{user_input}"
 
 This is a bit unclear or ambiguous. Respond like a helpful friend who wants to understand:
 1. Acknowledge what they said warmly ("Hmm, I'm not quite sure what you mean by...")
 2. Ask them to clarify in a natural way ("Could you tell me a bit more about...?")
-3. Give them helpful examples of what you CAN help with (privacy questions, data rights, cookies, etc.)
-4. Use 'we', 'our', 'us' for TechGropse
+3. Give them helpful examples of what you CAN help with (our services, projects, capabilities, etc.)
+4. Use 'we at TechGropse', 'our', 'us' when referring to the company
 5. Be encouraging and patient, not robotic
 6. Keep it brief (2-3 sentences)
 
 Examples of your tone:
-- "Hmm, I'm not quite sure I follow. Are you asking about how we collect data, or something else? I'm here to help with privacy stuff!"
-- "I want to make sure I understand - could you rephrase that a bit? I can help with questions about our privacy policy, cookies, your data rights, that kind of thing."
+- "Hmm, I'm not quite sure I follow. Could you tell me a bit more about what you're looking for? I can help with questions about our services, projects, or anything else!"
+- "I want to make sure I understand - could you rephrase that a bit? I'm here to help with anything about what we at TechGropse do!"
 
-Generate a warm, helpful clarification request as Alicia:"""
+Generate a warm, helpful clarification request as Anup:"""
 
             response = self.llm.invoke(prompt)
             return response.content.strip() if hasattr(response, 'content') else str(response).strip()
         except Exception as e:
             logger.error(f"Error generating unclear response: {e}")
-            return """I'm not quite sure what you're asking about. Could you rephrase your question? I'm here to help with our privacy policy, data collection practices, cookies, and your rights."""
+            return """I'm not quite sure what you're asking about. Could you rephrase your question? I'm here to help with anything about what we at TechGropse do!"""
     
     def _check_context_relevance(self, query: str, context_text: str) -> bool:
         """
@@ -481,13 +577,13 @@ Respond with only YES or NO:"""
             # Retrieve initial results from ChromaDB
             results = self.chromadb_client.search_similar_documents(query, initial_n_results)
 
-            # Filter results with STRICT similarity threshold
-            # Lower threshold = stricter filtering = only highly relevant docs pass
+            # Filter results with similarity threshold
+            # Higher threshold = more lenient = more docs pass through
             filtered_results = []
             for result in results:
-                # Only include results with high similarity (distance < 1.5)
-                # This ensures we only respond when we have truly relevant information
-                if result.get('distance', 0) < 1.5:
+                # Include results with reasonable similarity (distance < 1.7)
+                # This allows relevant context about the assistant, company info, etc.
+                if result.get('distance', 0) < 1.7:
                     filtered_results.append(result)
             
             # Apply reranking if enabled and we have results
@@ -583,7 +679,7 @@ Respond with only YES or NO:"""
                     We'll be happy to assist you with any questions."""
             
             # Use LLM directly for better control
-            prompt = f"""You are Alicia, a friendly and knowledgeable representative at TechGropse. You help with all aspects of the company - services, privacy, pricing, support, and more.
+            prompt = f"""You are Anup, a friendly and knowledgeable representative at TechGropse. You help with all aspects of the company - services, privacy, pricing, support, and more.
 
 Your Personality:
 - Warm and approachable, like talking to a helpful colleague
@@ -658,7 +754,7 @@ Important Guidelines:
 1. ONLY use information from the "Relevant Information" above - never use general knowledge
 2. If you have PARTIAL information, share what you know and offer to connect them: "I don't have all the specifics on that, but here's what I can tell you... Would you like me to have our team reach out with the complete details?"
 3. If you have NO information, be honest but helpful: "Hmm, that's a great question, but I don't have the exact details on that one in front of me. Let me connect you with our team who can help!"
-4. Always use "we", "our", "us" when referring to TechGropse (you're speaking FOR the company)
+4. Always use "we at TechGropse", "our", "us" when referring to the company (you're speaking FOR the company)
 5. Explain things like you're teaching a friend - use analogies and examples
 6. Use natural transitions: "So basically...", "Here's the thing...", "Let me break this down...", "To put it simply...", "The cool thing is..."
 7. If information comes from multiple documents, synthesize it naturally
@@ -673,7 +769,7 @@ Important Guidelines:
     - "Is there a specific part you'd like to know more about?"
     - Or sometimes just end naturally without a question
 
-Respond as Alicia would - naturally, warmly, and helpfully:"""
+Respond as Anup would - naturally, warmly, and helpfully:"""
 
             # Get response from LLM directly
             response_text = None
@@ -777,10 +873,10 @@ I really appreciate your patience and understanding!"""
             # Add engagement prompt at the end of detailed responses
             if response_text and len(response_text) > 100:  # Only for substantial responses
                 engagement_prompts = [
-                    "\n\nIs there anything else you'd like to know about this topic, or do you have other privacy questions?",
-                    "\n\nWould you like more information on this, or do you have any other questions about our privacy practices?",
-                    "\n\nDo you need more details about this, or is there something else regarding our privacy policy you'd like to know?",
-                    "\n\nIs there anything else about this topic you'd like me to clarify, or do you have other privacy-related questions?"
+                    "\n\nIs there anything else you'd like to know about this topic?",
+                    "\n\nWould you like more information on this, or is there anything else I can help you with?",
+                    "\n\nDo you need more details about this, or is there something else you'd like to know?",
+                    "\n\nIs there anything else about this topic you'd like me to clarify?"
                 ]
                 import random
                 response_text += random.choice(engagement_prompts)
@@ -790,7 +886,7 @@ I really appreciate your patience and understanding!"""
         except Exception as e:
             logger.error(f"Error generating response: {e}")
             return """I apologize, but I'm having trouble processing your request right now. 
-            For immediate assistance with privacy questions, please contact us at sales@techgropse.com."""
+            For immediate assistance, please contact us at sales@techgropse.com."""
     
     def _generate_followup_response(self, original_query: str, context_docs: List[Dict[str, Any]]) -> str:
         """
@@ -820,22 +916,22 @@ I really appreciate your patience and understanding!"""
                 context_text = "\n\n".join(context_chunks)
             
             if not context_text:
-                return """I don't have additional information on that topic in our privacy policy. 
+                return """I don't have additional information on that topic in our knowledge base. 
                 For more detailed information, please contact us directly at sales@techgropse.com."""
             
             # Use LLM to generate a more comprehensive response
-            prompt = f"""You are Alicia, a friendly privacy specialist at TechGropse who loves helping people understand their privacy.
+            prompt = f"""You are Anup, a friendly representative at TechGropse who loves helping people learn more.
 
 The user previously asked: "{original_query}"
 
 Now they want MORE DETAILS - they're curious and engaged!
 
-Relevant Information from Our Privacy Documents:
+Relevant Information from Our Documents:
 {context_text}
 
 Your Response Style:
 1. Start enthusiastically: "Sure, let me give you more details!" or "Absolutely! Here's a deeper dive..."
-2. Use 'we', 'our', 'us' for TechGropse (you're speaking FOR the company)
+2. Use 'we at TechGropse', 'our', 'us' when referring to the company (you're speaking FOR the company)
 3. Be thorough but conversational - like explaining to a friend
 4. Break down complex info into digestible pieces
 5. Use examples or analogies if helpful
@@ -844,10 +940,10 @@ Your Response Style:
 5. Break it down clearly with examples or explanations where helpful
 6. Be thorough but keep it conversational - like explaining to a friend
 7. Only mention contacting support if the info really isn't there
-8. Remember you're Alicia speaking FOR TechGropse, not ABOUT TechGropse
+8. Remember you're Anup speaking FOR TechGropse, not ABOUT TechGropse
 9. DO NOT include greetings like "Hi there!", "Hello!" - start directly with the detailed information
 
-Provide a detailed, friendly response as Alicia representing TechGropse (NO greetings):"""
+Provide a detailed, friendly response as Anup representing TechGropse (NO greetings):"""
 
             # Get response from LLM
             response_text = None
@@ -875,7 +971,7 @@ Provide a detailed, friendly response as Alicia representing TechGropse (NO gree
                         break
             
             if not response_text or len(response_text) < 20:
-                response_text = """We'd be happy to provide more information. For specific details about our privacy practices, 
+                response_text = """We'd be happy to provide more information. For specific details, 
                 please feel free to ask a more specific question or contact us directly at sales@techgropse.com."""
             
             # Add engagement prompt at the end of detailed follow-up responses
@@ -932,14 +1028,24 @@ Provide a detailed, friendly response as Alicia representing TechGropse (NO gree
             elif intent == IntentType.GOODBYE:
                 result['response'] = self.handle_goodbye()
                 result['needs_caching'] = False  # Don't cache goodbyes
+            
+            elif intent == IntentType.FEEDBACK:
+                # Handle user feedback/messages to be shared with team
+                result['response'] = self.handle_feedback(user_input)
+                result['needs_caching'] = False  # Don't cache feedback confirmations
                 
             elif intent == IntentType.QUERY:
-                # Retrieve relevant documents
-                context_docs = self.retrieve_relevant_documents(user_input)
-                result['context_docs'] = context_docs
-                
-                # Generate response based on context
-                result['response'] = self.generate_response_from_context(user_input, context_docs)
+                # Check if it's an identity question - handle directly without RAG
+                if self.is_identity_question(user_input):
+                    result['response'] = self.handle_identity_question(user_input)
+                    result['needs_caching'] = False  # Don't cache identity responses
+                else:
+                    # Retrieve relevant documents
+                    context_docs = self.retrieve_relevant_documents(user_input)
+                    result['context_docs'] = context_docs
+                    
+                    # Generate response based on context
+                    result['response'] = self.generate_response_from_context(user_input, context_docs)
                 
             elif intent == IntentType.FOLLOWUP:
                     # For follow-ups, we need the previous substantive question (not the current "need more info")
