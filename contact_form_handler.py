@@ -140,6 +140,103 @@ Respond with ONLY: KEEP, CHANGE, or UNCLEAR"""
         return relevant_count == 0
     
     @staticmethod
+    def parse_datetime_with_timezone(user_input: str) -> tuple:
+        """
+        Parse datetime, timezone and country from combined user input using LLM.
+        
+        Args:
+            user_input: User's natural language response like "Tomorrow 3 PM IST, India"
+            
+        Returns:
+            Tuple of (datetime_str, timezone_str, country_str) or (None, None, None) if parsing fails
+        """
+        try:
+            llm = ContactFormHandler.get_llm()
+            prompt = f"""You are parsing a user's availability response to extract date/time, timezone and country/location.
+
+User's response: "{user_input}"
+
+Extract:
+1. DATE/TIME: The date and time they mentioned (e.g., "tomorrow 3 PM", "Monday 10 AM", "25th December 2pm")
+2. TIMEZONE: Any timezone mentioned (e.g., IST, EST, PST, GMT, UTC+5:30)
+3. COUNTRY: Any country or region mentioned (e.g., India, United States, UK, Australia). If no country is mentioned, return "Not specified".
+
+If the input is unclear or doesn't contain valid date/time info, respond with: INVALID
+
+Format your response as:
+DATETIME: <extracted datetime>
+TIMEZONE: <extracted timezone or "Not specified">
+COUNTRY: <extracted country or "Not specified">
+
+Examples:
+- Input: "tomorrow 3 pm ist india" → DATETIME: tomorrow 3 PM | TIMEZONE: IST | COUNTRY: India
+- Input: "Monday 10 AM EST" → DATETIME: Monday 10 AM | TIMEZONE: EST | COUNTRY: Not specified
+- Input: "next week" → DATETIME: next week | TIMEZONE: Not specified | COUNTRY: Not specified
+- Input: "hello" → INVALID"""
+
+            response = llm.invoke(prompt)
+            result = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            
+            if 'INVALID' in result.upper():
+                return (None, None, None)
+
+            # Parse the response
+            datetime_str = None
+            timezone_str = None
+            country_str = None
+
+            for line in result.split('\n'):
+                line = line.strip()
+                if line.upper().startswith('DATETIME:'):
+                    datetime_str = line.split(':', 1)[1].strip().split('|')[0].strip()
+                elif line.upper().startswith('TIMEZONE:'):
+                    timezone_str = line.split(':', 1)[1].strip()
+                elif line.upper().startswith('COUNTRY:'):
+                    country_str = line.split(':', 1)[1].strip()
+
+            if datetime_str:
+                return (
+                    datetime_str,
+                    timezone_str if timezone_str else "Not specified",
+                    country_str if country_str else "Not specified"
+                )
+            return (None, None, None)
+
+        except Exception as e:
+            logger.error(f"Error parsing datetime with timezone: {e}")
+            # Fallback: accept the input as datetime and check for common timezone abbreviations and country names
+            user_lower = user_input.lower()
+            common_timezones = ['ist', 'est', 'pst', 'cst', 'mst', 'gmt', 'utc', 'bst', 'cet', 'jst', 'aest']
+            common_countries = ['india', 'united states', 'usa', 'uk', 'united kingdom', 'australia', 'canada', 'germany', 'france', 'spain']
+
+            found_tz = None
+            for tz in common_timezones:
+                if tz in user_lower:
+                    found_tz = tz.upper()
+                    break
+
+            found_country = None
+            for c in common_countries:
+                if c in user_lower:
+                    # Normalize some common aliases
+                    if c == 'usa':
+                        found_country = 'United States'
+                    elif c == 'uk' or c == 'united kingdom':
+                        found_country = 'United Kingdom'
+                    else:
+                        found_country = c.title()
+                    break
+
+            # If input has some content, accept it
+            if len(user_input.strip()) > 2:
+                return (
+                    user_input.strip(),
+                    found_tz if found_tz else "Not specified",
+                    found_country if found_country else "Not specified"
+                )
+            return (None, None, None)
+    
+    @staticmethod
     def ask_for_contact_consent(original_query: str, is_explicit_request: bool = False) -> str:
         """
         Generate message asking user if they want to be contacted.
@@ -154,7 +251,7 @@ Respond with ONLY: KEEP, CHANGE, or UNCLEAR"""
         if is_explicit_request:
             # User explicitly asked to be contacted - ask for availability directly
             # (user details should already be collected in initial flow)
-            return "Great! I'll connect you with our team. When would be the best time for them to reach out to you? Please provide your preferred date and time."
+            return "Great! I'll connect you with our team. When would be the best time for them to reach out? Please include your timezone and country. For example: 'Tomorrow 3 PM IST India' or 'Monday 10 AM EST USA'"
         else:
             # RAG fallback - no information found, ask for consent first
             return f"""I don't have specific information about that in our current documents. However, I'd be happy to connect you with our team who can provide detailed assistance with your question about: "{original_query}"
@@ -246,14 +343,14 @@ Would you like us to contact you?"""
                     existing_timezone = form_data.get('timezone')
                     return {
                         'next_state': ContactFormState.ASKING_SCHEDULE_CHANGE.value,
-                        'response': f"Sure! You previously scheduled a call for {existing_datetime} ({existing_timezone}). Would you like to keep this time or change it?",
+                        'response': f"Sure! You previously scheduled a call for {existing_datetime}. Would you like to keep this time or change it?",
                         'form_data': form_data
                     }
                 else:
                     # No existing schedule, ask for availability
                     return {
                         'next_state': ContactFormState.COLLECTING_DATETIME.value,
-                        'response': "Great! When would be the best time for our team to reach out to you? Please provide your preferred date and time.",
+                        'response': "Great! When would be the best time for our team to reach out? Please include your timezone and country. For example: 'Tomorrow 3 PM IST India' or 'Monday 10 AM EST USA'",
                         'form_data': form_data
                     }
             elif consent == 'no':
@@ -285,7 +382,8 @@ Would you like us to contact you?"""
                             mobile=form_data['mobile'],
                             preferred_datetime=form_data['preferred_datetime'],
                             timezone=form_data['timezone'],
-                            original_query=form_data.get('original_query', 'Not specified')
+                            original_query=form_data.get('original_query', 'Not specified'),
+                            country=form_data.get('country', 'Not specified')
                         )
                         if request_id:
                             logger.info(f"Contact request saved: {request_id}")
@@ -294,14 +392,14 @@ Would you like us to contact you?"""
                 
                 return {
                     'next_state': ContactFormState.IDLE.value,
-                    'response': f"All set! We'll contact you at {form_data.get('preferred_datetime')} ({form_data.get('timezone')}). Is there anything else I can help you with?",
+                    'response': f"All set! We'll contact you at {form_data.get('preferred_datetime')} ({form_data.get('timezone')}, {form_data.get('country')}). Is there anything else I can help you with?",
                     'form_data': form_data  # Preserve all data
                 }
             elif decision == 'change':
-                # User wants to change, ask for new datetime
+                # User wants to change, ask for new datetime (ask for timezone and country)
                 return {
                     'next_state': ContactFormState.COLLECTING_DATETIME.value,
-                    'response': "No problem! When would be the best time for our team to reach out to you? Please provide your preferred date and time.",
+                    'response': "No problem! When would be the best time for our team to reach out? Please include your timezone and country. For example: 'Tomorrow 3 PM IST India' or 'Monday 10 AM EST USA'",
                     'form_data': form_data
                 }
             else:
@@ -356,38 +454,26 @@ Would you like us to contact you?"""
             form_data['mobile'] = user_input
             return {
                 'next_state': ContactFormState.COLLECTING_DATETIME.value,
-                'response': "Got it! When would you prefer us to contact you? You can specify in any format.",
+                'response': "Got it! When would you prefer us to contact you? Please include your timezone and country. For example: 'Tomorrow 3 PM IST India' or 'Monday 10 AM EST USA'",
                 'form_data': form_data
             }
         
-        # Collect datetime
+        # Collect datetime with timezone and country (combined in one step)
         elif form_state == ContactFormState.COLLECTING_DATETIME.value:
-            is_valid, error = validate_datetime(user_input)
-            if not is_valid:
-                return {
-                    'next_state': form_state,
-                    'response': f"{error} Please provide your preferred date and time:",
-                    'form_data': form_data
-                }
-            form_data['preferred_datetime'] = user_input
-            return {
-                'next_state': ContactFormState.COLLECTING_TIMEZONE.value,
-                'response': "Great! What's your timezone? (e.g., IST, UTC+5:30, EST, PST, GMT)",
-                'form_data': form_data
-            }
-        
-        # Collect timezone and complete
-        elif form_state == ContactFormState.COLLECTING_TIMEZONE.value:
-            from utils.validators import validate_timezone
+            # Parse datetime, timezone and country from the combined input
+            # User can say things like "Tomorrow 3 PM IST India" or "Monday 10 AM EST USA"
+            parsed_datetime, parsed_timezone, parsed_country = ContactFormHandler.parse_datetime_with_timezone(user_input)
             
-            is_valid, error = validate_timezone(user_input)
-            if not is_valid:
+            if not parsed_datetime:
                 return {
                     'next_state': form_state,
-                    'response': f"{error} Please provide your timezone:",
+                    'response': "Please provide when you're available along with your timezone and country. For example: 'Tomorrow 3 PM IST India' or 'Monday 10 AM EST USA'",
                     'form_data': form_data
                 }
-            form_data['timezone'] = user_input
+            
+            form_data['preferred_datetime'] = parsed_datetime
+            form_data['timezone'] = parsed_timezone if parsed_timezone else "Not specified"
+            form_data['country'] = parsed_country if parsed_country else "Not specified"
             
             # Save to MongoDB
             if mongodb_client:
@@ -399,7 +485,8 @@ Would you like us to contact you?"""
                         mobile=form_data['mobile'],
                         preferred_datetime=form_data['preferred_datetime'],
                         timezone=form_data['timezone'],
-                        original_query=form_data.get('original_query', 'Not specified')
+                        original_query=form_data.get('original_query', 'Not specified'),
+                        country=form_data.get('country', 'Not specified')
                     )
                     if request_id:
                         logger.info(f"Contact request saved: {request_id}")
@@ -414,7 +501,8 @@ Would you like us to contact you?"""
                 'email': form_data.get('email'),
                 'mobile': form_data.get('mobile'),
                 'preferred_datetime': form_data.get('preferred_datetime'),
-                'timezone': form_data.get('timezone')
+                'timezone': form_data.get('timezone'),
+                'country': form_data.get('country')
             }
             
             # Set to IDLE so next query goes through normal flow

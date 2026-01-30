@@ -2,6 +2,13 @@
 """
 Text-to-Voice Socket.IO Server for Frontend Integration
 Accepts text queries and streams audio responses to browser
+
+Features:
+- Real-time speech-to-text processing (Whisper)
+- Parallel intent classification + RAG retrieval (AsyncChatBot)
+- Background TTS generation with streaming (AWS Polly)
+- WebSocket for real-time communication
+- Target: 2-3 second total response time
 """
 
 import socketio
@@ -24,7 +31,9 @@ load_dotenv()
 # Add current directory to Python path
 sys.path.append(str(Path(__file__).parent))
 
-from chatbot import ChatBot
+# Use async chatbot for parallel processing
+from chatbot_async import AsyncChatBot, get_async_chatbot
+from agent import ContactFormState
 
 # Configure logging
 logging.basicConfig(
@@ -33,12 +42,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Create Socket.IO server with CORS enabled
+# Create Socket.IO server with CORS enabled and proper ping settings
 sio = socketio.AsyncServer(
     cors_allowed_origins='*',  # Allow all origins for development
     async_mode='aiohttp',
-    logger=True,
-    engineio_logger=True
+    logger=False,
+    engineio_logger=False,
+    ping_timeout=60,   # 60 seconds before disconnect
+    ping_interval=25   # Send ping every 25 seconds
 )
 
 app = web.Application()
@@ -263,30 +274,79 @@ except Exception as e:
     sys.exit(1)
 
 
+# =============================================================================
+# HELPER FUNCTIONS
+# =============================================================================
+
+def is_collecting_info(session_id: str) -> tuple:
+    """
+    Check if we're in the contact form collection flow.
+    Returns (is_collecting, current_field)
+    """
+    from session_manager import session_manager
+    
+    state = session_manager.get_contact_form_state(session_id)
+    
+    if state in [
+        ContactFormState.INITIAL_COLLECTING_NAME.value,
+        'initial_collecting_name'
+    ]:
+        return True, 'name'
+    elif state in [
+        ContactFormState.INITIAL_COLLECTING_EMAIL.value,
+        'initial_collecting_email'
+    ]:
+        return True, 'email'
+    elif state in [
+        ContactFormState.INITIAL_COLLECTING_PHONE.value,
+        'initial_collecting_phone'
+    ]:
+        return True, 'phone'
+    elif state in [
+        ContactFormState.COLLECTING_DATETIME.value,
+        'collecting_datetime'
+    ]:
+        return True, 'datetime'
+    elif state in [
+        ContactFormState.ASKING_CONSENT.value,
+        'asking_consent'
+    ]:
+        return True, 'consent'
+    
+    return False, None
+
+
+# =============================================================================
+# SOCKET.IO EVENTS
+# =============================================================================
+
 @sio.event
 async def connect(sid, environ, auth=None):
-    """Handle client connection."""
+    """Handle client connection with parallel processing pipeline."""
     logger.info(f"🔗 Client {sid} connected")
     if auth:
         logger.info(f"📋 Connection data: {auth}")
     
     try:
-        # Create individual session for this client
-        chatbot = ChatBot()
-        session_id, initial_message = chatbot.start_session()  # Get session_id and welcome message
+        # Create async chatbot for parallel processing
+        chatbot = get_async_chatbot()
+        session_id, initial_message = chatbot.start_session()
         
         clients[sid] = {
             'chatbot': chatbot,
-            'session_id': session_id  # Store separately
+            'session_id': session_id,
+            'interim_cache': {},
+            'last_interim_time': 0
         }
         
         # Initialize interruption tracking for this client
         active_responses[sid] = {'task': None, 'interrupted': False}
         
-        # Send connection status
+        # Send connection status with session_id
         await sio.emit('status', {
-            'message': 'Connected',
-            'type': 'success'
+            'message': 'Connected to TechGropse Server',
+            'type': 'success',
+            'session_id': session_id
         }, room=sid)
         
         # Send initial greeting asking for name
@@ -294,10 +354,11 @@ async def connect(sid, environ, auth=None):
             'response': initial_message,
             'message': initial_message,
             'type': 'initial_greeting',
-            'show_chatbox': True
+            'show_chatbox': True,
+            'current_field': 'name'
         }, room=sid)
         
-        logger.info(f"✅ Session created for client {sid} with initial greeting")
+        logger.info(f"✅ Session {session_id[:8]}... created for client {sid}")
         
         # Generate and stream audio for initial greeting
         await stream_audio_to_client(sid, initial_message)
@@ -367,14 +428,13 @@ async def text_only_query(sid, data):
         
         logger.info(f"💬 Text-only query from {sid}: '{query_text}'")
         
-        # Process query through chatbot
-        loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(
-            None,
-            chatbot.process_message,
-            query_text,
-            session_id
+        # Process query through async chatbot with parallel pipeline
+        result = await chatbot.process_message_async(
+            user_input=query_text,
+            session_id=session_id
         )
+        
+        response = result.get('response', '')
         
         logger.info(f"✅ Text-only response for {sid}: {response[:50]}...")
         
@@ -452,24 +512,29 @@ async def text_query(sid, data):
                 # Reset interruption flag
                 active_responses[sid]['interrupted'] = False
                 
-                # Process query through chatbot
-                logger.info(f"🔄 Processing query for {sid}...")
+                # Process query through async chatbot with parallel pipeline
+                logger.info(f"🔄 Processing query with parallel pipeline for {sid}...")
                 
-                # Run in executor to avoid blocking
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(
-                    None,
-                    chatbot.process_message,
-                    query_text,
-                    session_id
+                process_start = time.time()
+                
+                # Use async processing with parallel intent + RAG
+                result = await chatbot.process_message_async(
+                    user_input=query_text,
+                    session_id=session_id
                 )
+                
+                response = result.get('response', '')
+                intent = result.get('intent', '')
+                timing_info = result.get('timing', {})
+                
+                process_time = time.time() - process_start
                 
                 # Check if interrupted during processing
                 if active_responses[sid]['interrupted']:
                     logger.info(f"⚠️ Response interrupted during processing for {sid}")
                     return
                 
-                logger.info(f"✅ Client {sid} processing completed")
+                logger.info(f"✅ [{sid[:8]}] Parallel processing: {process_time:.2f}s (Intent: {intent})")
                 
                 # Get contact form state to determine chatbox visibility
                 form_state = chatbot.session_manager.get_contact_form_state(session_id)
@@ -626,6 +691,58 @@ async def voice_input(sid, data):
         await sio.emit('error', {
             'message': str(e)
         }, room=sid)
+
+
+# =============================================================================
+# INTERIM SPEECH (for predictive processing)
+# =============================================================================
+
+@sio.event
+async def interim_speech(sid, data):
+    """
+    Handle interim (partial) speech transcription from Web Speech API.
+    Runs predictive intent analysis + RAG prefetch for faster response.
+    
+    Target: < 500ms for quick predictions
+    """
+    if sid not in clients:
+        return
+    
+    try:
+        partial_text = data.get('text', '') if isinstance(data, dict) else str(data)
+        
+        if not partial_text or len(partial_text) < 5:
+            return
+        
+        # Rate limit interim processing (max every 1 second)
+        now = time.time()
+        if now - clients[sid].get('last_interim_time', 0) < 1.0:
+            return
+        clients[sid]['last_interim_time'] = now
+        
+        chatbot = clients[sid]['chatbot']
+        session_id = clients[sid]['session_id']
+        
+        # Check if we have process_interim_async method
+        if hasattr(chatbot, 'process_interim_async'):
+            # Process interim speech (predictive)
+            result = await chatbot.process_interim_async(partial_text, session_id)
+            
+            # Cache interim result for potential use
+            clients[sid]['interim_cache'] = result
+            
+            # Send interim prediction to client
+            await sio.emit('interim_prediction', {
+                'type': 'interim',
+                'intent': result.get('intent', 'unknown'),
+                'partial_text': partial_text,
+                'timing': result.get('timing', 0)
+            }, room=sid)
+        else:
+            logger.debug(f"Interim speech received for {sid}: '{partial_text}' (no interim processing)")
+        
+    except Exception as e:
+        logger.error(f"Interim processing error for {sid}: {e}")
 
 
 @sio.event
@@ -806,7 +923,7 @@ def check_environment():
     return issues
 
 
-def main(host='0.0.0.0', port=5000):
+def main(host='0.0.0.0', port=8080):
     """Start the Text-to-Voice Socket.IO server."""
     logger.info(f"🚀 Starting Text-to-Voice Socket.IO Server on {host}:{port}")
     logger.info("💬 Each client gets their own session")
@@ -828,7 +945,7 @@ if __name__ == '__main__':
             sys.exit(1)
         
         # Start the Socket.IO server
-        main(host='0.0.0.0', port=5000)
+        main(host='0.0.0.0', port=8080)
         
     except KeyboardInterrupt:
         print("\n👋 Server shutting down...")

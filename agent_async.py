@@ -1,0 +1,402 @@
+"""
+Async CrewAI agent for parallel intent classification, RAG retrieval, and response generation.
+Optimized for 2-3 second total response time.
+"""
+import asyncio
+import logging
+from typing import Dict, Any, List, Optional, Tuple
+from enum import Enum
+from concurrent.futures import ThreadPoolExecutor
+import time
+
+from langchain_openai import ChatOpenAI
+
+from config import config
+from vectorstore.chromadb_client import ChromaDBClient, get_chromadb_client
+from utils.reranker import Reranker, get_reranker
+
+logger = logging.getLogger(__name__)
+
+# Thread pool for CPU-bound operations
+_executor = ThreadPoolExecutor(max_workers=4)
+
+
+class IntentType(Enum):
+    """Intent classification types."""
+    GREETING = "greeting"
+    CASUAL_CHAT = "casual_chat"
+    FOLLOWUP = "followup"
+    CONTACT_REQUEST = "contact_request"
+    FEEDBACK = "feedback"
+    QUERY = "query"
+    GOODBYE = "goodbye"
+    UNCLEAR = "unclear"
+
+
+class AsyncChatbotAgent:
+    """
+    Async agent with parallel processing for:
+    - Intent classification
+    - RAG document retrieval
+    - Response generation
+    - TTS preparation (background)
+    """
+    
+    def __init__(self, chromadb_client: ChromaDBClient = None):
+        """Initialize the async chatbot agent."""
+        # Use singleton instances to avoid reloading models
+        self.chromadb_client = chromadb_client or get_chromadb_client()
+        
+        # Initialize reranker if enabled - use singleton
+        self.reranker = None
+        if config.enable_reranking:
+            try:
+                self.reranker = get_reranker()
+                logger.info(f"Reranker initialized: {config.reranker_model}")
+            except Exception as e:
+                logger.warning(f"Reranker init failed: {e}")
+        
+        # Fast LLM for intent classification
+        self.fast_llm = ChatOpenAI(
+            model="gpt-4.1-nano",
+            temperature=0.1,
+            openai_api_key=config.openai_api_key,
+            max_tokens=50,  # Minimal tokens for intent
+            request_timeout=5  # Fast timeout
+        )
+        
+        # Standard LLM for response generation
+        self.llm = ChatOpenAI(
+            model="gpt-4.1-nano",
+            temperature=0.3,
+            openai_api_key=config.openai_api_key,
+            max_tokens=300,
+            request_timeout=10
+        )
+        
+        logger.info("AsyncChatbotAgent initialized with parallel processing")
+    
+    async def classify_intent_async(self, user_input: str) -> IntentType:
+        """
+        Async intent classification with fast LLM.
+        Target: < 500ms
+        """
+        start = time.time()
+        
+        try:
+            prompt = f"""Classify intent into ONE category:
+GREETING - saying hello/hi
+CASUAL_CHAT - "I'm doing great", "how are you" (casual)
+FOLLOWUP - "tell me more", "elaborate"
+CONTACT_REQUEST - "contact me", "call me", "connect me"
+FEEDBACK - "tell your team", "share this"
+QUERY - asking about services, projects, capabilities, identity
+GOODBYE - "bye", "thanks", ending
+
+Input: "{user_input}"
+
+Respond with ONLY the category name:"""
+
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                _executor,
+                lambda: self.fast_llm.invoke(prompt)
+            )
+            
+            intent_text = response.content.strip().upper() if hasattr(response, 'content') else str(response).strip().upper()
+            
+            elapsed = time.time() - start
+            logger.debug(f"Intent classification: {elapsed:.2f}s")
+            
+            # Map to IntentType
+            if 'GREETING' in intent_text:
+                return IntentType.GREETING
+            elif 'CASUAL' in intent_text:
+                return IntentType.CASUAL_CHAT
+            elif 'FOLLOWUP' in intent_text:
+                return IntentType.FOLLOWUP
+            elif 'CONTACT' in intent_text:
+                return IntentType.CONTACT_REQUEST
+            elif 'FEEDBACK' in intent_text:
+                return IntentType.FEEDBACK
+            elif 'QUERY' in intent_text:
+                return IntentType.QUERY
+            elif 'GOODBYE' in intent_text:
+                return IntentType.GOODBYE
+            else:
+                return IntentType.UNCLEAR
+                
+        except Exception as e:
+            logger.error(f"Intent classification error: {e}")
+            return self._fallback_intent(user_input)
+    
+    def _fallback_intent(self, user_input: str) -> IntentType:
+        """Fast regex-based fallback for intent classification."""
+        user_lower = user_input.lower().strip()
+        
+        if any(w in user_lower for w in ['hi', 'hello', 'hey']):
+            return IntentType.GREETING
+        elif any(w in user_lower for w in ['bye', 'goodbye', 'thanks', 'thank you']):
+            return IntentType.GOODBYE
+        elif any(w in user_lower for w in ['contact me', 'call me', 'connect me']):
+            return IntentType.CONTACT_REQUEST
+        elif any(w in user_lower for w in ['more info', 'tell me more', 'elaborate']):
+            return IntentType.FOLLOWUP
+        return IntentType.QUERY
+    
+    async def retrieve_documents_async(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
+        """
+        Async document retrieval from ChromaDB.
+        Target: < 300ms
+        """
+        start = time.time()
+        
+        try:
+            loop = asyncio.get_event_loop()
+            
+            # Run ChromaDB search in executor
+            initial_n = config.rerank_candidates if self.reranker else n_results
+            results = await loop.run_in_executor(
+                _executor,
+                lambda: self.chromadb_client.search_similar_documents(query, initial_n)
+            )
+            
+            # Filter by distance threshold
+            filtered = [r for r in results if r.get('distance', 0) < 1.7]
+            
+            # Rerank if enabled
+            if self.reranker and filtered:
+                filtered = await loop.run_in_executor(
+                    _executor,
+                    lambda: self.reranker.rerank(query, filtered, config.rerank_top_k)
+                )
+            
+            elapsed = time.time() - start
+            logger.debug(f"Document retrieval: {elapsed:.2f}s, {len(filtered)} docs")
+            
+            return filtered[:n_results]
+            
+        except Exception as e:
+            logger.error(f"Document retrieval error: {e}")
+            return []
+    
+    async def generate_response_async(
+        self, 
+        query: str, 
+        intent: IntentType, 
+        context_docs: List[Dict[str, Any]],
+        fast_mode: bool = False
+    ) -> str:
+        """
+        Async response generation.
+        fast_mode: Skip LLM, return top doc directly (< 100ms)
+        normal_mode: Use LLM for contextual response (< 1s)
+        """
+        start = time.time()
+        
+        try:
+            # Handle non-query intents quickly
+            if intent == IntentType.GREETING:
+                return await self._handle_greeting_async(query)
+            elif intent == IntentType.CASUAL_CHAT:
+                return await self._handle_casual_async(query)
+            elif intent == IntentType.GOODBYE:
+                return "Thanks for chatting! Feel free to reach out anytime - we at TechGropse are always here to help!"
+            elif intent == IntentType.FEEDBACK:
+                return "Got it! I'll make sure to pass this along to our team at TechGropse."
+            elif intent == IntentType.UNCLEAR:
+                return "I'm not quite sure I follow. Could you tell me a bit more about what you're looking for?"
+            elif intent == IntentType.CONTACT_REQUEST:
+                # Return trigger signal - chatbot_async will handle asking for availability
+                return "TRIGGER_CONTACT_FORM"
+            
+            # FAST MODE: Return top document directly
+            if fast_mode and context_docs:
+                content = context_docs[0].get('content', '')
+                # Return first 3 sentences
+                sentences = content.split('.')[:3]
+                elapsed = time.time() - start
+                logger.debug(f"Fast mode response: {elapsed:.2f}s")
+                return '. '.join(sentences) + '.'
+            
+            # NORMAL MODE: LLM-powered contextual response
+            if not context_docs:
+                return "I don't have specific information about that in our documents. Would you like me to connect you with our team?"
+            
+            # Build context
+            context_text = "\n\n".join([
+                f"[{doc.get('metadata', {}).get('source', 'Unknown')}]\n{doc['content'][:400]}"
+                for doc in context_docs[:3]
+            ])
+            
+            prompt = f"""You are Anup, TechGropse's friendly virtual assistant.
+
+Question: {query}
+
+Context:
+{context_text}
+
+Instructions:
+- Answer in 2-3 sentences max
+- Be conversational and warm
+- Use "we at TechGropse", "our" when referring to company
+- Only use information from context
+- No greetings like "Hi!"
+
+Response:"""
+
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                _executor,
+                lambda: self.llm.invoke(prompt)
+            )
+            
+            result = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            
+            elapsed = time.time() - start
+            logger.debug(f"LLM response: {elapsed:.2f}s")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Response generation error: {e}")
+            return "I'm having trouble processing that right now. Please try again."
+    
+    async def _handle_greeting_async(self, user_input: str) -> str:
+        """Quick greeting response."""
+        if any(p in user_input.lower() for p in ['how are you', 'how r u']):
+            return "I'm doing great, thanks for asking! How about you?"
+        return "Hi! I'm Anup from TechGropse. How can I help you today?"
+    
+    async def _handle_casual_async(self, user_input: str) -> str:
+        """Quick casual chat response."""
+        if any(p in user_input.lower() for p in ['how are you', 'how r u']):
+            return "I'm doing great, thanks! How about you?"
+        return "That's wonderful to hear! What can I help you with today?"
+    
+    async def process_parallel(
+        self, 
+        user_input: str,
+        fast_mode: bool = False,
+        skip_intent: bool = False,
+        predicted_intent: IntentType = None
+    ) -> Dict[str, Any]:
+        """
+        PARALLEL PROCESSING PIPELINE
+        
+        Runs Intent Classification and RAG Retrieval simultaneously.
+        Target total time: 1-2 seconds
+        
+        Args:
+            user_input: User's message
+            fast_mode: Skip LLM for instant response
+            skip_intent: Use predicted_intent instead of classifying
+            predicted_intent: Pre-predicted intent (for interim processing)
+        
+        Returns:
+            Dict with intent, response, context_docs, timing
+        """
+        total_start = time.time()
+        timing = {}
+        
+        try:
+            # STEP 1: PARALLEL - Intent + RAG simultaneously
+            parallel_start = time.time()
+            
+            if skip_intent and predicted_intent:
+                # Use pre-predicted intent
+                intent = predicted_intent
+                # Only run RAG
+                context_docs = await self.retrieve_documents_async(user_input)
+                timing['parallel'] = time.time() - parallel_start
+            else:
+                # Run both in parallel
+                intent_task = asyncio.create_task(self.classify_intent_async(user_input))
+                rag_task = asyncio.create_task(self.retrieve_documents_async(user_input))
+                
+                intent, context_docs = await asyncio.gather(intent_task, rag_task)
+                timing['parallel'] = time.time() - parallel_start
+            
+            logger.info(f"Parallel phase: {timing['parallel']:.2f}s (Intent: {intent.value}, Docs: {len(context_docs)})")
+            
+            # STEP 2: Response Generation
+            response_start = time.time()
+            response = await self.generate_response_async(
+                user_input, 
+                intent, 
+                context_docs,
+                fast_mode=fast_mode
+            )
+            timing['response'] = time.time() - response_start
+            
+            timing['total'] = time.time() - total_start
+            
+            logger.info(f"Total processing: {timing['total']:.2f}s")
+            
+            return {
+                'intent': intent.value,
+                'response': response,
+                'context_docs': context_docs,
+                'timing': timing,
+                'user_input': user_input
+            }
+            
+        except Exception as e:
+            logger.error(f"Parallel processing error: {e}")
+            return {
+                'intent': 'error',
+                'response': "I encountered an error. Please try again.",
+                'context_docs': [],
+                'timing': {'total': time.time() - total_start},
+                'user_input': user_input
+            }
+    
+    async def process_interim(self, partial_text: str) -> Dict[str, Any]:
+        """
+        Process interim (partial) speech for predictive analysis.
+        Returns quick predictions without full response generation.
+        
+        Target: < 500ms
+        """
+        start = time.time()
+        
+        try:
+            # Run intent classification only for interim
+            intent = await self.classify_intent_async(partial_text)
+            
+            # For QUERY intent, start RAG prefetch in background
+            context_preview = []
+            if intent == IntentType.QUERY:
+                # Quick RAG with minimal results
+                context_preview = await self.retrieve_documents_async(partial_text, n_results=2)
+            
+            return {
+                'type': 'interim',
+                'intent': intent.value,
+                'partial_text': partial_text,
+                'context_preview': [
+                    {'section': doc.get('metadata', {}).get('source', 'Unknown')[:50]}
+                    for doc in context_preview
+                ],
+                'timing': time.time() - start
+            }
+            
+        except Exception as e:
+            logger.error(f"Interim processing error: {e}")
+            return {
+                'type': 'interim',
+                'intent': 'unknown',
+                'partial_text': partial_text,
+                'timing': time.time() - start
+            }
+
+
+# Singleton instance for reuse
+_agent_instance = None
+
+def get_async_agent() -> AsyncChatbotAgent:
+    """Get or create the async agent singleton."""
+    global _agent_instance
+    if _agent_instance is None:
+        _agent_instance = AsyncChatbotAgent()
+    return _agent_instance

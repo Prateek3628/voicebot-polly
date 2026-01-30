@@ -1,0 +1,127 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+test_results.json
+*.cover
+.cache
+nosetests.xml
+coverage.xml
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+chroma_db/
+*.db-journal
+
+# Audio/Media Files
+audio_cache/
+*.mp3
+*.wav
+*.webm
+*.ogg
+*.pcm
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+
+# Node modules (if any frontend dependencies)
+node_modules/
+package-lock.json
+yarn.lock
+
+# Build artifacts
+*.pyc
+*.pyo
+*.pyd
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# Project specific
+test_*.py
+reference_codes/
+deprecated/
+archive/
+
+# Resolved merge conflict files
+*.resolved

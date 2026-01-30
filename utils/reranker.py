@@ -133,3 +133,15 @@ class Reranker:
         except Exception as e:
             logger.error(f"Error during reranking with scores: {e}")
             return [(doc, 0.0) for doc in documents]
+
+
+# Singleton instance
+_reranker = None
+
+def get_reranker() -> Reranker:
+    """Get or create the Reranker singleton."""
+    global _reranker
+    if _reranker is None:
+        from config import config
+        _reranker = Reranker(model_name=config.reranker_model)
+    return _reranker

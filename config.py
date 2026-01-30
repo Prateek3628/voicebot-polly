@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     
     # OpenAI Configuration (required for CrewAI)
     openai_api_key: str = ""
+    openai_model: str = "gpt-4.1-nano"  # Model for LLM calls
     
     # Redis Configuration
     redis_host: str = "localhost"
@@ -42,7 +43,7 @@ class Settings(BaseSettings):
     enable_reranking: bool = True
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L6-v2"
     rerank_top_k: int = 5  # Number of documents to return after reranking
-    rerank_candidates: int = 15  # Number of candidates to retrieve before reranking
+    rerank_candidates: int = 8  # Reduced from 15 to 8 for faster reranking (~0.5-0.8s instead of 1-1.5s)
     
     # MongoDB Configuration
     mongodb_uri: str = ""

@@ -286,3 +286,14 @@ class ChromaDBClient:
             True if collection is empty, False otherwise
         """
         return self.get_collection_count() == 0
+
+
+# Singleton instance
+_chromadb_client = None
+
+def get_chromadb_client() -> ChromaDBClient:
+    """Get or create the ChromaDB client singleton."""
+    global _chromadb_client
+    if _chromadb_client is None:
+        _chromadb_client = ChromaDBClient()
+    return _chromadb_client

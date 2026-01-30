@@ -43,7 +43,8 @@ class MongoDBClient:
         mobile: str,
         preferred_datetime: str,
         timezone: str,
-        original_query: str
+        original_query: str,
+        country: str = "Not specified"
     ) -> Optional[str]:
         """
         Create a new contact request.
@@ -56,6 +57,7 @@ class MongoDBClient:
             preferred_datetime: Preferred contact date/time (flexible format)
             timezone: User's timezone (e.g., IST, UTC+5:30, EST)
             original_query: The original query that triggered the request
+            country: User's country/location
             
         Returns:
             Inserted document ID as string, or None if failed
@@ -71,6 +73,7 @@ class MongoDBClient:
                 "mobile": mobile,
                 "preferred_datetime": preferred_datetime,
                 "timezone": timezone,
+                "country": country,
                 "original_query": original_query,
                 "created_at": datetime.utcnow(),
                 "status": "pending"

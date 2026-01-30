@@ -185,7 +185,7 @@ class ChatBot:
                     existing_timezone = user_details.get('timezone')
                     self.session_manager.set_contact_form_data(session_id, user_details)
                     self.session_manager.set_contact_form_state(session_id, ContactFormState.ASKING_SCHEDULE_CHANGE.value)
-                    response = f"Sure! You previously scheduled a call for {existing_datetime} ({existing_timezone}). Would you like to keep this time or change it?"
+                    response = f"Sure! You previously scheduled a call for {existing_datetime}. Would you like to keep this time or change it?"
                 else:
                     # No existing schedule, ask for availability
                     self.session_manager.set_contact_form_data(session_id, user_details)

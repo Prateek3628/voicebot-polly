@@ -627,8 +627,41 @@
     </div>
 
     <script>
-        // Initialize Socket.IO connection
-        const socket = io('http://0.0.0.0:5000');
+        // Store session ID for current page session only (not persisted)
+        let currentSessionId = null;
+        
+        // Initialize Socket.IO connection - use WebSocket only to prevent upgrade/disconnect
+        const socket = io('http://0.0.0.0:8080', {
+            transports: ['websocket'],  // Force WebSocket only - no polling upgrade
+            reconnection: false,        // Don't auto-reconnect (creates new session)
+            timeout: 60000,             // Connection timeout: 60 seconds
+            auth: (cb) => {
+                if (currentSessionId) {
+                    cb({ session_id: currentSessionId });
+                } else {
+                    cb({});
+                }
+            }
+        });
+        
+        // Debug: Log all socket events
+        socket.onAny((event, ...args) => {
+            console.log(`[SOCKET EVENT] ${event}:`, args);
+        });
+        
+        socket.on('connect_error', (error) => {
+            console.error('[SOCKET] Connection error:', error);
+        });
+        
+        socket.on('disconnect', (reason) => {
+            console.error('[SOCKET] Disconnected! Reason:', reason);
+            console.trace('[SOCKET] Disconnect stack trace:');
+        });
+        
+        // Prevent page unload/reload
+        window.addEventListener('beforeunload', (e) => {
+            console.warn('[PAGE] beforeunload triggered!');
+        });
 
         // DOM elements
         const voiceButton = document.getElementById('voiceButton');
@@ -676,6 +709,23 @@
         // User info collection state
         let userInfoCollected = false;
 
+        // Web Speech API setup
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition = null;
+        let isUsingWebSpeech = false;
+
+        // Check if Web Speech API is available
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+            isUsingWebSpeech = true;
+            console.log('✅ Web Speech API available - using real-time transcription');
+        } else {
+            console.log('⚠️ Web Speech API not available - using Whisper fallback');
+        }
+
         // Initialize audio context
         async function initAudioContext() {
             if (!audioContext) {
@@ -698,7 +748,7 @@
             }
         }
 
-        // Start recording with auto-stop on silence
+        // Start recording - use Web Speech API if available, otherwise MediaRecorder
         async function startRecording() {
             try {
                 // Don't allow recording if chatbox is active
@@ -713,6 +763,95 @@
                     stopAllAudio();
                 }
 
+                if (isUsingWebSpeech && recognition) {
+                    // Use Web Speech API for real-time transcription
+                    startWebSpeechRecognition();
+                } else {
+                    // Fallback to MediaRecorder + Whisper
+                    startMediaRecorderRecording();
+                }
+            } catch (error) {
+                console.error('Error starting recording:', error);
+                statusText.textContent = 'Error starting recording';
+            }
+        }
+
+        // Start Web Speech API recognition
+        function startWebSpeechRecognition() {
+            if (!recognition) return;
+
+            isRecording = true;
+            isListening = true;
+            voiceButton.classList.add('recording');
+            voiceButton.textContent = '🎤';
+            statusText.textContent = 'Listening...';
+            
+            let finalTranscript = '';
+            let lastInterimSent = 0;
+            
+            recognition.onresult = (event) => {
+                let interimTranscript = '';
+                
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const transcript = event.results[i][0].transcript;
+                    
+                    if (event.results[i].isFinal) {
+                        finalTranscript += transcript + ' ';
+                        console.log('Final transcript:', transcript);
+                    } else {
+                        interimTranscript += transcript;
+                        console.log('Interim:', interimTranscript);
+                        statusText.textContent = `Hearing: "${interimTranscript}"`;
+                        
+                        // Send interim to server for predictive analysis (rate limited to 1.5s)
+                        const now = Date.now();
+                        if (interimTranscript.length > 10 && (now - lastInterimSent) > 1500) {
+                            lastInterimSent = now;
+                            console.log('🔮 Sending interim for prediction:', interimTranscript);
+                            socket.emit('interim_speech', { text: interimTranscript });
+                        }
+                    }
+                }
+                
+                // When we have a final result, send it to server
+                if (finalTranscript.trim()) {
+                    console.log('Sending final transcript:', finalTranscript);
+                    sendTranscriptToServer(finalTranscript.trim());
+                    finalTranscript = '';
+                    recognition.stop();
+                }
+            };
+            
+            recognition.onerror = (event) => {
+                console.error('Speech recognition error:', event.error);
+                if (event.error === 'no-speech') {
+                    statusText.textContent = 'No speech detected';
+                } else {
+                    statusText.textContent = `Error: ${event.error}`;
+                }
+                isRecording = false;
+                voiceButton.classList.remove('recording');
+            };
+            
+            recognition.onend = () => {
+                console.log('Recognition ended');
+                isRecording = false;
+                isListening = false;
+                voiceButton.classList.remove('recording');
+                statusText.textContent = 'Processing...';
+            };
+            
+            try {
+                recognition.start();
+                console.log('Web Speech recognition started');
+            } catch (error) {
+                console.error('Error starting recognition:', error);
+            }
+        }
+
+        // Fallback: Start MediaRecorder recording (original Whisper method)
+        async function startMediaRecorderRecording() {
+            try {
                 // Ensure microphone is initialized
                 if (!mediaStream) {
                     await initMicrophone();
@@ -857,6 +996,22 @@
             } catch (error) {
                 console.error('Error sending audio:', error);
                 statusText.textContent = 'Error sending audio';
+            }
+        }
+
+        // Send transcript directly to server (from Web Speech API)
+        function sendTranscriptToServer(transcript) {
+            try {
+                console.log('Sending transcript to server:', transcript);
+                statusText.textContent = 'Processing...';
+                
+                // Send as text_query event since we already have the transcript
+                socket.emit('text_query', {
+                    text: transcript
+                });
+            } catch (error) {
+                console.error('Error sending transcript:', error);
+                statusText.textContent = 'Error sending transcript';
             }
         }
 
@@ -1104,6 +1259,17 @@
             console.log('Ready - waiting for user info collection');
         });
 
+        // Capture session_id from server
+        socket.on('status', (data) => {
+            if (data.session_id) {
+                currentSessionId = data.session_id;
+                console.log('Session ID:', currentSessionId.substring(0, 8) + '...');
+            }
+            if (data.session_restored) {
+                console.log('✅ Session restored - continuing conversation');
+            }
+        });
+
         socket.on('disconnect', () => {
             console.log('Disconnected from server');
             connectionStatus.textContent = '❌';
@@ -1136,6 +1302,15 @@
             // transcriptionText.textContent = data.text;
             // transcription.classList.add('show');
             statusText.textContent = '💭 Thinking...';
+        });
+
+        // Interim prediction (predictive intent analysis)
+        socket.on('interim_prediction', (data) => {
+            console.log('🔮 Interim prediction:', data);
+            if (data.intent && data.intent !== 'unknown') {
+                // Show subtle hint that AI is analyzing while user speaks
+                statusText.textContent = `Hearing... (detecting: ${data.intent})`;
+            }
         });
 
         socket.on('text_response', (data) => {
