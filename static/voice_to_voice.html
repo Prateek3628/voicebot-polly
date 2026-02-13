@@ -234,7 +234,7 @@
             display: block;
         }
 
-        /* Chatbox - Hidden by default, shown when collecting info */
+        /* Chatbox - DISABLED for voice-to-voice interface */
         .chatbox {
             background: rgba(15, 15, 15, 0.7);
             border-radius: 20px;
@@ -242,7 +242,7 @@
             margin-top: 30px;
             max-height: 350px;
             overflow-y: auto;
-            display: none;
+            display: none !important; /* Force hide - voice interface should be pure audio */
             transition: all 0.4s ease;
             position: fixed;
             bottom: 30px;
@@ -256,7 +256,7 @@
         }
 
         .chatbox.show {
-            display: block;
+            display: none !important; /* Never show in voice-to-voice mode */
             animation: slideInUp 0.4s ease;
         }
 
@@ -1315,37 +1315,26 @@
 
         socket.on('text_response', (data) => {
             console.log('Response:', data);
+            console.log('🔍 DEBUG: show_chatbox =', data.show_chatbox, 'contact_form_state =', data.contact_form_state);
             // Don't show text response - pure voice mode
             // statusText.textContent = data.message;
 
-            // Handle chatbox visibility based on flag
-            if (data.show_chatbox) {
-                console.log('Showing chatbox - collecting:', data.current_field);
-                isChatboxActive = true;
-                userInfoCollected = false;
-                // Stop recording when chatbox appears
-                if (isRecording) {
-                    stopRecording();
-                }
-                chatbox.classList.add('show');
-                addChatMessage(data.message, 'bot');
-                chatInput.focus();
-            } else {
-                console.log('Hiding chatbox - normal conversation');
-                isChatboxActive = false;
-                chatbox.classList.remove('show');
-                
-                // Mark that user info has been collected
-                if (!userInfoCollected) {
-                    userInfoCollected = true;
-                    // Auto-start recording after user info is collected
-                    setTimeout(() => {
-                        if (!isRecording && !isPlayingAudio) {
-                            console.log('User info collected, auto-starting recording');
-                            startRecording();
-                        }
-                    }, 500);
-                }
+            // VOICE-TO-VOICE MODE: NEVER show chatbox regardless of server flag
+            // This is a pure voice interface - no text forms should appear
+            console.log('Voice-to-voice mode - chatbox permanently disabled');
+            isChatboxActive = false;
+            chatbox.classList.remove('show');
+            
+            // Mark that user info has been collected (skip form entirely)
+            if (!userInfoCollected) {
+                userInfoCollected = true;
+                // Auto-start recording after initial greeting
+                setTimeout(() => {
+                    if (!isRecording && !isPlayingAudio) {
+                        console.log('Initial greeting complete, auto-starting recording');
+                        startRecording();
+                    }
+                }, 500);
             }
         });
 

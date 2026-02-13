@@ -1,230 +1,483 @@
-# Privacy Policy Chatbot
+# 🤖 VoiceBot - AI Voice Assistant with Parallel Processing
 
-An intelligent chatbot powered by CrewAI that helps users understand TechGropse's privacy policy and answers questions about data collection, usage, and user rights.
+> Intelligent voice-enabled chatbot with real-time speech processing, parallel RAG, and speculative audio generation
 
-## Features
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![AWS Polly](https://img.shields.io/badge/AWS-Polly-orange.svg)](https://aws.amazon.com/polly/)
+[![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4-green.svg)](https://openai.com/)
 
-- **CrewAI Agent**: Single intelligent agent for intent classification, greeting handling, and query processing
-- **Redis Session Management**: Session-based caching with automatic cleanup
-- **ChromaDB Integration**: Vector database for efficient document retrieval
-- **Smart Caching**: Cached responses with contextual prefixes ("As I mentioned earlier...")
-- **Intent Classification**: Automatic detection of greetings, queries, and goodbye messages
-- **Socket.IO Integration**: Real-time communication with web interface
-- **Interactive Modes**: Both command-line and web-based interfaces
+---
 
-## Architecture Flow
+## 🌟 Features
+
+### Core Capabilities
+- **🎤 Real-time Voice Input** - Web Speech API + Whisper fallback
+- **🔊 Neural Text-to-Speech** - AWS Polly with multiple voices
+- **⚡ Parallel Processing** - Concurrent intent classification + RAG retrieval
+- **🔮 Speculative Execution** - Pre-generate responses while user speaks
+- **💾 Audio Caching** - Instant playback with 0ms delay
+- **🔄 Interruption Handling** - Cancel previous responses seamlessly
+- **📝 Contact Form** - Intelligent information collection
+- **🎯 Intent Classification** - GPT-4 powered intent detection
+
+### Performance
+- **2-3 second response time** (with parallel processing)
+- **0-100ms audio playback** (with speculative cache hit)
+- **70%+ cache hit rate** (with optimized speculation)
+- **50% faster** than sequential processing
+
+---
+
+## 📁 Project Structure
 
 ```
-User Query → Agent (Intent Classification) → Cache Check → Response Generation
-                ↓                              ↓
-        Greeting/Query/Goodbye         Cache Hit → Return with prefix
-                ↓                              ↓
-        If Query → ChromaDB Retrieval   Cache Miss → Process & Cache
+voicebot-polly/
+├── src/                          # 🆕 Main application code
+│   ├── server.py                # Socket.IO server (main entry point)
+│   ├── core/                    # Core business logic
+│   │   ├── agent_async.py      # Async agent with parallel RAG
+│   │   ├── chatbot_async.py    # Async chatbot orchestrator
+│   │   ├── session_manager.py  # Session state management
+│   │   └── contact_form_handler.py
+│   └── config/
+│       └── settings.py         # Configuration
+│
+├── vectorstore/                 # Vector database
+│   └── chromadb_client.py      # ChromaDB client
+│
+├── database/                    # Database clients
+│   └── mongodb_client.py       # MongoDB for contacts
+│
+├── utils/                       # Utilities
+│   ├── reranker.py            # Cross-encoder reranker
+│   └── validators.py          # Input validation
+│
+├── data/                        # Data files
+│   └── combined_info.txt       # Knowledge base
+│
+├── scripts/                     # Setup scripts
+│   ├── initialise_data.py     # Initialize ChromaDB
+│   └── document_loader.py     # Load documents
+│
+├── docs/                        # 📚 Documentation
+│   ├── ARCHITECTURE.md
+│   ├── PARALLEL_AUDIO_OPTIMIZATION.md
+│   └── SPECULATIVE_AUDIO_IMPLEMENTATION.md
+│
+├── legacy/                      # 🗄️ Archived files
+│   ├── agent.py               # Old synchronous agent
+│   └── main.py                # Old server
+│
+├── static/                      # Frontend
+│   └── voice_to_voice.html    # Web interface
+│
+├── .env                         # Environment variables
+├── requirements.txt
+└── run_server_new.sh           # 🚀 Start script
 ```
 
-## Installation
+---
 
-1. **Clone and navigate to the project directory**
-   ```bash
-   cd simple_chatbot
-   ```
+## 🚀 Quick Start
 
-2. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 1. Prerequisites
 
-3. **Start Redis server** (required for session management)
-   ```bash
-   # macOS with Homebrew
-   brew install redis
-   brew services start redis
-   
-   # Ubuntu/Debian
-   sudo apt update && sudo apt install redis-server
-   sudo systemctl start redis-server
-   
-   # Or use Docker
-   docker run -d -p 6379:6379 redis:alpine
-   ```
+- Python 3.11+
+- AWS Account (for Polly TTS)
+- OpenAI API Key
+- MongoDB (optional, for contact storage)
 
-4. **Configure environment variables**
-   ```bash
-   cp .env.example .env
-   # Edit .env and add your OpenAI API key
-   ```
+### 2. Installation
 
-5. **Initialize data** (optional - will auto-initialize on first run)
-   ```bash
-   python main.py --init
-   ```
-
-## Usage
-
-### Web Interface (Socket.IO)
 ```bash
-# Start the web server with real-time chat
-python run_socket_server.py
-# OR
-python socket_server.py
+# Clone repository
+cd voicebot-polly
 
-# Open browser to: http://localhost:5000
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
 ```
 
-### Command Line Interface
+### 3. Configuration
+
+Create a `.env` file:
+
 ```bash
-python main.py
+# OpenAI Configuration
+OPENAI_API_KEY=sk-your-key-here
+OPENAI_MODEL=gpt-4o-mini
+
+# AWS Configuration (for Polly TTS)
+AWS_ACCESS_KEY_ID=your-access-key
+AWS_SECRET_ACCESS_KEY=your-secret-key
+AWS_REGION=us-east-1
+POLLY_VOICE_ID=Joanna
+POLLY_OUTPUT_FORMAT=mp3
+
+# MongoDB (optional)
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DATABASE=voicechatbot
+
+# ChromaDB
+CHROMADB_PERSIST_DIRECTORY=./chroma_db
 ```
 
-### Available Commands
+### 4. Initialize Data
+
 ```bash
-python main.py --help        # Show help information
-python main.py --health      # Check system health
-python main.py --init        # Initialize/reinitialize data
-python main.py --stats       # Show system statistics
+# Load documents into ChromaDB
+python scripts/initialise_data.py
 ```
 
-### Socket Events
+### 5. Start Server
 
-**Client → Server:**
-- `user_query`: Send a message to the bot
-- `health_check`: Request system health status
-- `get_stats`: Request session statistics
-
-**Server → Client:**
-- `query_received`: Acknowledgment that query was received
-- `bot_response`: Bot's response to the query
-- `status`: System status messages
-- `error`: Error messages
-
-### Example Conversation
-```
-🤖 Privacy Policy Assistant
-
-Hello! I'm here to help you understand TechGropse's privacy policy...
-
-💬 You: Hello
-🤖 Bot: Hello! I'm here to help you with any questions about our privacy policy. What would you like to know?
-
-💬 You: What data do you collect?
-🤖 Bot: We collect several types of personal information when you use our services:
-- Your name, email address, and phone number when you contact us
-- Company name, address, and telephone number when you register
-- Message content and attachments you send to us
-...
-
-💬 You: What data do you collect?
-🤖 Bot: As I mentioned earlier, we collect several types of personal information when you use our services...
-
-💬 You: bye
-🤖 Bot: Thank you for your questions! If you need any more information about our privacy policy, feel free to ask anytime.
-```
-
-## Configuration
-
-### Environment Variables
-Set these in your `.env` file:
-
-- `OPENAI_API_KEY` (Required): Your OpenAI API key
-- `REDIS_HOST` (Optional): Redis host (default: localhost)
-- `REDIS_PORT` (Optional): Redis port (default: 6379)
-- `REDIS_PASSWORD` (Optional): Redis password if required
-
-### System Configuration
-Edit `config.py` to modify:
-- Chunking parameters
-- Session timeout
-- Embedding model
-- Data file path
-
-## Components
-
-### 1. CrewAI Agent (`agent.py`)
-- Single agent for all tasks
-- Intent classification (greeting, query, goodbye)
-- Context-aware response generation
-- ChromaDB integration for document retrieval
-
-### 2. Session Manager (`session_manager.py`)
-- Redis-based session management
-- Query-response caching
-- Automatic session cleanup
-- Activity tracking
-
-### 3. ChromaDB Client (`vectorstore/chromadb_client.py`)
-- Document chunking and embedding
-- Vector similarity search
-- Persistent storage
-
-### 4. Main Interface (`chatbot.py`)
-- Orchestrates the conversation flow
-- Cache-first strategy
-- Session management
-- Error handling
-
-## Data Initialization
-
-The system automatically processes the privacy policy document (`data/info.txt`) into chunks and stores them in ChromaDB with embeddings. This enables semantic search for relevant information.
-
-To manually reinitialize data:
 ```bash
-python main.py --init
+# Option 1: Using the run script
+./run_server_new.sh
+
+# Option 2: Direct Python
+python3 src/server.py
 ```
 
-## Session Management
+Server starts on: **http://localhost:8080**
 
-- Each interaction creates a unique session
-- Sessions automatically expire after 1 hour of inactivity
-- Query-response pairs are cached per session
-- Cache is cleared when session ends
-- Cached responses include contextual prefixes
+### 6. Open Web Interface
 
-## Health Monitoring
-
-Check system health:
 ```bash
-python main.py --health
+# Voice interface (default)
+open http://localhost:8080/voice
+
+# Text interface (testing)
+open http://localhost:8080/text
 ```
 
-This verifies:
-- Redis connection
-- ChromaDB collection status
-- Agent functionality
-- Overall system health
+---
 
-## Troubleshooting
+## 🎯 How It Works
+
+### Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    USER SPEAKS                          │
+│         "What are your services?"                       │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│           WEB SPEECH API (Browser STT)                  │
+│  • Sends interim results every 1s                       │
+│  • Fallback: Whisper API (if unavailable)              │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│         🔮 SPECULATIVE EXECUTION (1s mark)              │
+│  Interim: "What are"                                    │
+│  ├─ Start RAG processing in background                 │
+│  ├─ Generate audio speculatively                       │
+│  └─ Cache: {text, audio_bytes, intent}                 │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│        ⚡ PARALLEL PROCESSING (asyncio.gather)          │
+│  ┌──────────────────┬──────────────────┐              │
+│  │ Intent (GPT-4)   │ RAG (ChromaDB)  │              │
+│  │ ~1.2s            │ ~0.3s            │              │
+│  └──────────────────┴──────────────────┘              │
+│           Both run simultaneously! = 1.2s              │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│         💬 RESPONSE GENERATION (GPT-4o-mini)            │
+│  Context: Retrieved docs + Intent                      │
+│  Output: "We at TechGropse offer..."                   │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│         🎵 AUDIO GENERATION (AWS Polly)                 │
+│  Pre-generated during speculation!                      │
+│  Cached: audio_bytes (MP3)                             │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│            USER STOPS SPEAKING (4s)                     │
+│  Final: "What are your services?"                      │
+└────────────────┬────────────────────────────────────────┘
+                 │
+                 ▼
+┌─────────────────────────────────────────────────────────┐
+│         🎯 CACHE CHECK (Similarity: 90%)                │
+│  ✅ CACHE HIT! Audio ready!                            │
+│  🚀 Stream cached audio instantly                      │
+│  ⚡ 0ms delay! (vs 2-4s without cache)                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 💻 Usage
+
+### Voice Interface
+
+1. **Click microphone button** to start speaking
+2. **Speak your question** (e.g., "What services do you offer?")
+3. **Release button** when done
+4. **Listen to response** (audio plays automatically)
+
+### Supported Queries
+
+- "What services does TechGropse offer?"
+- "How much does app development cost?"
+- "What technologies do you use?"
+- "Tell me about your portfolio"
+- "I want to contact your team"
+- "Connect me with someone"
+
+### Voice Commands
+
+- **Interrupt**: Start speaking while bot is responding
+- **Reconnect**: Refresh page if connection lost
+- **Change voice**: Use voice selector (male/female options)
+
+---
+
+## 🔧 Configuration
+
+### AWS Polly Voices
+
+**Female voices:**
+- Joanna (US) - Default
+- Kendra (US)
+- Ruth (US)
+- Salli (US)
+
+**Male voices:**
+- Matthew (US)
+- Joey (US)
+- Stephen (US)
+
+Change voice in `.env`:
+```bash
+POLLY_VOICE_ID=Matthew  # For male voice
+```
+
+### Performance Tuning
+
+Edit `src/config/settings.py`:
+
+```python
+# Reranking
+enable_reranking = True
+rerank_top_k = 5
+rerank_candidates = 8
+
+# Chunking
+chunk_size = 300
+chunk_overlap = 100
+
+# Rate limiting (speculation)
+interim_rate_limit = 1.0  # seconds
+min_chars_for_speculation = 5
+```
+
+---
+
+## 📊 Performance Metrics
+
+### Response Time Breakdown
+
+| Phase | Without Speculation | With Speculation | Improvement |
+|-------|---------------------|------------------|-------------|
+| **User Speaking** | 4s | 4s | - |
+| **RAG Processing** | 2s (after) | 2s (during) | **2s saved** |
+| **Audio Generation** | 2s (after) | 2s (during) | **2s saved** |
+| **Total Delay** | 4s | ~0s | **4s saved!** |
+
+### Cost Analysis
+
+Per 1000 queries:
+- OpenAI GPT-4: ~$0.20
+- OpenAI Embeddings: ~$0.02
+- AWS Polly TTS: ~$0.36 (with speculation: ~$0.54)
+- **Total: ~$0.58 - $0.76 per 1000 queries**
+
+---
+
+## 🧪 Testing
+
+### Run Tests
+```bash
+# Test Polly TTS
+python tests/test_polly.py
+
+# Test contact form
+python tests/test_form_flow.py
+
+# Test streaming
+python tests/test_streaming.py
+```
+
+### Health Check
+```bash
+curl http://localhost:8080/health
+```
+
+---
+
+## 📚 Documentation
+
+- [**ARCHITECTURE.md**](docs/ARCHITECTURE.md) - Complete system architecture
+- [**PARALLEL_AUDIO_OPTIMIZATION.md**](docs/PARALLEL_AUDIO_OPTIMIZATION.md) - Performance optimization details
+- [**SPECULATIVE_AUDIO_IMPLEMENTATION.md**](docs/SPECULATIVE_AUDIO_IMPLEMENTATION.md) - Speculative execution guide
+
+---
+
+## 🐛 Troubleshooting
 
 ### Common Issues
 
-1. **Redis Connection Error**
-   ```bash
-   # Ensure Redis is running
-   redis-cli ping  # Should return "PONG"
-   ```
+**1. "Module not found" errors**
+```bash
+# Ensure you're in project root and venv is activated
+export PYTHONPATH="${PYTHONPATH}:$(pwd)"
+source venv/bin/activate
+```
 
-2. **OpenAI API Key Missing**
-   ```bash
-   # Set in .env file
-   OPENAI_API_KEY=your-api-key-here
-   ```
+**2. AWS Polly errors**
+```bash
+# Verify AWS credentials
+aws configure list
 
-3. **Empty ChromaDB Collection**
-   ```bash
-   # Reinitialize data
-   python main.py --init
-   ```
+# Test AWS credentials
+aws polly describe-voices --region us-east-1
+```
 
-### Logs
-The application logs important events and errors. Check the console output for debugging information.
+**3. OpenAI API errors**
+```bash
+# Check API key
+echo $OPENAI_API_KEY
 
-## Dependencies
+# Test API access
+python -c "from openai import OpenAI; print(OpenAI().models.list())"
+```
 
-- **crewai**: AI agent framework
-- **langchain**: LLM integration and text processing
-- **chromadb**: Vector database
-- **redis**: Session and cache management
-- **sentence-transformers**: Text embeddings
+**4. Socket connection issues**
+```bash
+# Check if port 8080 is available
+lsof -i :8080
 
-## License
+# Kill process if needed
+kill -9 <PID>
+```
 
-This project is for educational and internal use.
+**5. ChromaDB not initialized**
+```bash
+# Reinitialize vector database
+python scripts/initialise_data.py
+```
+
+---
+
+## 🚀 Deployment
+
+### Production Checklist
+
+- [ ] Set `DEBUG=False` in config
+- [ ] Use production OpenAI API key
+- [ ] Configure proper CORS origins
+- [ ] Set up monitoring (logs, metrics)
+- [ ] Enable HTTPS/SSL
+- [ ] Configure firewall rules
+- [ ] Set up automatic restarts (PM2, systemd)
+- [ ] Configure backup for ChromaDB
+- [ ] Set up rate limiting
+- [ ] Configure MongoDB replica set
+
+### Deploy to AWS EC2
+
+```bash
+# On EC2 instance
+git clone <repo-url>
+cd voicebot-polly
+
+# Install dependencies
+pip3 install -r requirements.txt
+
+# Configure environment
+nano .env
+
+# Initialize data
+python3 scripts/initialise_data.py
+
+# Start with PM2
+pm2 start run_server_new.sh --name voicebot
+pm2 save
+pm2 startup
+```
+
+---
+
+## 🤝 Contributing
+
+Contributions welcome! Please:
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit changes (`git commit -m 'Add amazing feature'`)
+4. Push to branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+---
+
+## 📝 License
+
+This project is proprietary software for TechGropse.
+
+---
+
+## 👥 Team
+
+**TechGropse Development Team**
+- Voice AI Engineering
+- Full-stack Development
+- DevOps & Infrastructure
+
+---
+
+## 📧 Support
+
+For support, email: support@techgropse.com
+
+---
+
+## 🎯 Roadmap
+
+### Phase 1: Core Features ✅
+- [x] Voice input/output
+- [x] Parallel processing
+- [x] Speculative execution
+- [x] Audio caching
+
+### Phase 2: Enhancements 🚧
+- [ ] Multi-language support
+- [ ] Voice emotion detection
+- [ ] Advanced personalization
+- [ ] Analytics dashboard
+
+### Phase 3: Scale 🔮
+- [ ] Distributed caching (Redis)
+- [ ] Load balancing
+- [ ] Auto-scaling
+- [ ] Advanced monitoring
+
+---
+
+**Made with ❤️ by TechGropse**

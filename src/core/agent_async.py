@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 import time
 
 from langchain_openai import ChatOpenAI
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from config import config
 from vectorstore.chromadb_client import ChromaDBClient, get_chromadb_client
@@ -27,6 +28,7 @@ class IntentType(Enum):
     CASUAL_CHAT = "casual_chat"
     FOLLOWUP = "followup"
     CONTACT_REQUEST = "contact_request"
+    PROJECT_INQUIRY = "project_inquiry"  # New: for project-related questions
     FEEDBACK = "feedback"
     QUERY = "query"
     GOODBYE = "goodbye"
@@ -46,6 +48,9 @@ class AsyncChatbotAgent:
         """Initialize the async chatbot agent."""
         # Use singleton instances to avoid reloading models
         self.chromadb_client = chromadb_client or get_chromadb_client()
+        
+        # Conversation memory: session_id -> list of LangChain messages
+        self.conversation_history = {}
         
         # Initialize reranker if enabled - use singleton
         self.reranker = None
@@ -87,8 +92,9 @@ class AsyncChatbotAgent:
             prompt = f"""Classify intent into ONE category:
 GREETING - saying hello/hi
 CASUAL_CHAT - "I'm doing great", "how are you" (casual)
-FOLLOWUP - "tell me more", "elaborate"
+FOLLOWUP - "tell me more", "elaborate", "need more information", "more details", "can you explain further"
 CONTACT_REQUEST - "contact me", "call me", "connect me"
+PROJECT_INQUIRY - asking about cost, timeline, budget, "can you build", "how much", development quotes, project estimation, "what would it cost"
 FEEDBACK - "tell your team", "share this"
 QUERY - asking about services, projects, capabilities, identity
 GOODBYE - "bye", "thanks", ending
@@ -117,6 +123,8 @@ Respond with ONLY the category name:"""
                 return IntentType.FOLLOWUP
             elif 'CONTACT' in intent_text:
                 return IntentType.CONTACT_REQUEST
+            elif 'PROJECT' in intent_text:
+                return IntentType.PROJECT_INQUIRY
             elif 'FEEDBACK' in intent_text:
                 return IntentType.FEEDBACK
             elif 'QUERY' in intent_text:
@@ -140,25 +148,30 @@ Respond with ONLY the category name:"""
             return IntentType.GOODBYE
         elif any(w in user_lower for w in ['contact me', 'call me', 'connect me']):
             return IntentType.CONTACT_REQUEST
+        elif any(w in user_lower for w in ['cost', 'price', 'budget', 'how much', 'can you build', 'timeline', 'estimate']):
+            return IntentType.PROJECT_INQUIRY
         elif any(w in user_lower for w in ['more info', 'tell me more', 'elaborate']):
             return IntentType.FOLLOWUP
         return IntentType.QUERY
     
     async def retrieve_documents_async(self, query: str, n_results: int = 5) -> List[Dict[str, Any]]:
         """
-        Async document retrieval from ChromaDB.
+        Async document retrieval from ChromaDB with query enhancement for better tech stack results.
         Target: < 300ms
         """
         start = time.time()
         
         try:
+            # Enhance query intelligently using LLM for better retrieval
+            enhanced_query = await self._enhance_query_intelligently(query)
+            
             loop = asyncio.get_event_loop()
             
             # Run ChromaDB search in executor
             initial_n = config.rerank_candidates if self.reranker else n_results
             results = await loop.run_in_executor(
                 _executor,
-                lambda: self.chromadb_client.search_similar_documents(query, initial_n)
+                lambda: self.chromadb_client.search_similar_documents(enhanced_query, initial_n)
             )
             
             # Filter by distance threshold
@@ -180,11 +193,67 @@ Respond with ONLY the category name:"""
             logger.error(f"Document retrieval error: {e}")
             return []
     
+    async def _enhance_query_intelligently(self, query: str) -> str:
+        """
+        Intelligently enhance queries using LLM with manual fallback.
+        This replaces hardcoded keyword matching with intelligent understanding.
+        """
+        query_lower = query.lower()
+        
+        # Manual fallback for tech stack queries (when LLM fails)
+        tech_indicators = [
+            'tech stack', 'technology stack', 'technologies', 'programming languages',
+            'frameworks', 'tools', 'development stack', 'technical capabilities',
+            'what do you use', 'what does techgropse use', 'programming'
+        ]
+        
+        # Exclude pricing/cost queries from tech enhancement
+        pricing_indicators = ['cost', 'price', 'pricing', 'budget', 'how much']
+        has_pricing = any(indicator in query_lower for indicator in pricing_indicators)
+        
+        if any(indicator in query_lower for indicator in tech_indicators) and not has_pricing:
+            # Direct enhancement for tech stack queries
+            enhancement = " React Native Flutter Node.js Python MongoDB Kotlin Swift technology stack programming languages frameworks"
+            enhanced_query = f"{query}{enhancement}"
+            logger.debug(f"Enhanced tech query: '{query}' -> '{enhanced_query}'")
+            return enhanced_query
+        
+        # Try LLM enhancement for other queries
+        try:
+            prompt = f"""Enhance this query with relevant search terms:
+
+Query: "{query}"
+
+If about pricing/cost: add " pricing cost development budget"
+If about team/company: add " team developers company"
+If about services: add " mobile app development services"
+
+Enhanced:"""
+
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                _executor,
+                lambda: self.fast_llm.invoke(prompt)
+            )
+            
+            enhanced = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            
+            # Safety check - if enhancement seems wrong, return original
+            if len(enhanced) > len(query) * 3:  # Too long, probably an error
+                return query
+                
+            return enhanced if enhanced else query
+            
+        except Exception as e:
+            logger.debug(f"Query enhancement failed: {e}")
+            return query
+    
     async def generate_response_async(
         self, 
         query: str, 
         intent: IntentType, 
         context_docs: List[Dict[str, Any]],
+        session_id: str = None,
         fast_mode: bool = False
     ) -> str:
         """
@@ -206,6 +275,9 @@ Respond with ONLY the category name:"""
                 return "Got it! I'll make sure to pass this along to our team at TechGropse."
             elif intent == IntentType.UNCLEAR:
                 return "I'm not quite sure I follow. Could you tell me a bit more about what you're looking for?"
+            elif intent == IntentType.FOLLOWUP:
+                # Handle followup questions with conversation context
+                return await self._handle_followup_async(query, context_docs, session_id)
             elif intent == IntentType.CONTACT_REQUEST:
                 # Return trigger signal - chatbot_async will handle asking for availability
                 return "TRIGGER_CONTACT_FORM"
@@ -229,26 +301,38 @@ Respond with ONLY the category name:"""
                 for doc in context_docs[:3]
             ])
             
-            prompt = f"""You are Anup, TechGropse's friendly virtual assistant.
+            # Create combined prompt with context and use LangChain message format
+            combined_input = f"""Based on the following documents, please answer this question: {query}
 
-Question: {query}
-
-Context:
+Documents:
 {context_text}
 
-Instructions:
-- Answer in 2-3 sentences max
+CRITICAL INSTRUCTIONS:
+- You MUST answer using ONLY the information provided in the documents above
+- If the question is about technology, tech stack, or tools - list the specific technologies mentioned in the documents
+- Answer in 2-3 sentences max but include specific technical details from the documents
 - Be conversational and warm
 - Use "we at TechGropse", "our" when referring to company
-- Only use information from context
+- You can help with services, projects, AI solutions, app development, and scheduling meetings
+- Do NOT give generic responses - use the specific information from the documents
 - No greetings like "Hi!"
 
-Response:"""
-
+If you can't find the answer in the documents, say "I don't have enough information to answer that question based on the provided documents."
+"""
+            
+            # Get conversation history and create messages
+            chat_history = self.get_conversation_history(session_id)
+            
+            messages = [
+                SystemMessage(content="You are Anup, TechGropse's friendly virtual assistant. Answer questions based on provided documents and conversation history."),
+            ] + chat_history + [
+                HumanMessage(content=combined_input)
+            ]
+            
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 _executor,
-                lambda: self.llm.invoke(prompt)
+                lambda: self.llm.invoke(messages)
             )
             
             result = response.content.strip() if hasattr(response, 'content') else str(response).strip()
@@ -274,9 +358,131 @@ Response:"""
             return "I'm doing great, thanks! How about you?"
         return "That's wonderful to hear! What can I help you with today?"
     
+    async def _handle_followup_async(self, query: str, context_docs: List[Dict[str, Any]], session_id: str) -> str:
+        """Handle followup questions using conversation history in LangChain format."""
+        chat_history = self.get_conversation_history(session_id)
+        
+        if not chat_history:
+            # No conversation context, treat as regular query
+            if not context_docs:
+                return "I don't have specific information about that. Would you like me to connect you with our team?"
+            
+            # Use first document as context
+            context_text = context_docs[0].get('content', '')[:400]
+            return f"Based on what I know: {context_text.split('.')[0]}. Would you like more details about this?"
+        
+        # Build context from documents
+        context_text = "\n\n".join([
+            f"[{doc.get('metadata', {}).get('source', 'Unknown')}]\n{doc['content'][:400]}"
+            for doc in context_docs[:3]
+        ])
+        
+        # Create combined input for followup handling
+        combined_input = f"""The user is asking a follow-up question: {query}
+
+Based on our conversation history and these documents, please provide more detailed information:
+
+Documents:
+{context_text}
+
+Instructions:
+- This is a follow-up question about the previous topic in our conversation
+- Look at the conversation history to understand what they previously asked about
+- Provide more detailed, specific information about that topic
+- Use the documents to give accurate details
+- Be conversational and warm  
+- Use "we at TechGropse", "our" when referring to company
+- 2-3 sentences max
+
+If you can't provide more details based on the documents, say "I don't have additional details about that in our documents."
+"""
+        
+        try:
+            # Use conversation history with the followup prompt
+            messages = [
+                SystemMessage(content="You are Anup, TechGropse's friendly virtual assistant. Handle follow-up questions by looking at conversation history and provided documents."),
+            ] + chat_history + [
+                HumanMessage(content=combined_input)
+            ]
+            
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                _executor,
+                lambda: self.llm.invoke(messages)
+            )
+            
+            result = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            return result
+            
+        except Exception as e:
+            logger.error(f"Followup response error: {e}")
+            return "I'd be happy to provide more details. Could you be more specific about what aspect you'd like to know more about?"
+    
+    async def _rewrite_query_with_history(self, user_input: str, session_id: str) -> str:
+        """
+        Rewrite user query to be standalone using conversation history.
+        Based on the reference implementation for better context awareness.
+        """
+        if not session_id or session_id not in self.conversation_history:
+            return user_input
+            
+        chat_history = self.conversation_history[session_id]
+        if not chat_history:
+            return user_input
+            
+        try:
+            # Create messages for query rewriting
+            messages = [
+                SystemMessage(content="Given the chat history, rewrite the new question to be standalone and searchable. Include relevant context from the conversation. Just return the rewritten question."),
+            ] + chat_history[-6:] + [  # Use last 6 messages for context
+                HumanMessage(content=f"New question: {user_input}")
+            ]
+            
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                _executor,
+                lambda: self.fast_llm.invoke(messages)
+            )
+            
+            rewritten_query = result.content.strip() if hasattr(result, 'content') else str(result).strip()
+            logger.debug(f"Query rewritten: '{user_input}' -> '{rewritten_query}'")
+            return rewritten_query
+            
+        except Exception as e:
+            logger.error(f"Error rewriting query: {e}")
+            return user_input
+    
+    def add_to_conversation_history(self, session_id: str, user_input: str, response: str):
+        """Add messages to conversation history using LangChain format."""
+        if not session_id:
+            return
+            
+        if session_id not in self.conversation_history:
+            self.conversation_history[session_id] = []
+        
+        # Add both user and AI messages
+        self.conversation_history[session_id].append(HumanMessage(content=user_input))
+        self.conversation_history[session_id].append(AIMessage(content=response))
+        
+        # Keep only the last 12 messages (6 pairs)
+        if len(self.conversation_history[session_id]) > 12:
+            self.conversation_history[session_id] = self.conversation_history[session_id][-12:]
+    
+    def get_conversation_history(self, session_id: str) -> List:
+        """Get LangChain message history for a session."""
+        if not session_id or session_id not in self.conversation_history:
+            return []
+        return self.conversation_history[session_id][-6:]  # Return last 6 messages for context
+    
+    def clear_conversation_history(self, session_id: str):
+        """Clear conversation history for a session."""
+        if session_id in self.conversation_history:
+            del self.conversation_history[session_id]
+    
     async def process_parallel(
         self, 
         user_input: str,
+        session_id: str = None,
         fast_mode: bool = False,
         skip_intent: bool = False,
         predicted_intent: IntentType = None
@@ -300,19 +506,27 @@ Response:"""
         timing = {}
         
         try:
+            # STEP 0: Query rewriting with conversation history
+            if session_id and not skip_intent:  # Don't rewrite for interim processing
+                rewrite_start = time.time()
+                search_query = await self._rewrite_query_with_history(user_input, session_id)
+                timing['query_rewrite'] = time.time() - rewrite_start
+            else:
+                search_query = user_input
+            
             # STEP 1: PARALLEL - Intent + RAG simultaneously
             parallel_start = time.time()
             
             if skip_intent and predicted_intent:
                 # Use pre-predicted intent
                 intent = predicted_intent
-                # Only run RAG
-                context_docs = await self.retrieve_documents_async(user_input)
+                # Only run RAG with the search query
+                context_docs = await self.retrieve_documents_async(search_query)
                 timing['parallel'] = time.time() - parallel_start
             else:
-                # Run both in parallel
+                # Run both in parallel - use original user_input for intent, search_query for RAG
                 intent_task = asyncio.create_task(self.classify_intent_async(user_input))
-                rag_task = asyncio.create_task(self.retrieve_documents_async(user_input))
+                rag_task = asyncio.create_task(self.retrieve_documents_async(search_query))
                 
                 intent, context_docs = await asyncio.gather(intent_task, rag_task)
                 timing['parallel'] = time.time() - parallel_start
@@ -325,6 +539,7 @@ Response:"""
                 user_input, 
                 intent, 
                 context_docs,
+                session_id=session_id,
                 fast_mode=fast_mode
             )
             timing['response'] = time.time() - response_start
@@ -332,6 +547,10 @@ Response:"""
             timing['total'] = time.time() - total_start
             
             logger.info(f"Total processing: {timing['total']:.2f}s")
+            
+            # Store in conversation history
+            if session_id and response:
+                self.add_to_conversation_history(session_id, user_input, response)
             
             return {
                 'intent': intent.value,
@@ -389,6 +608,45 @@ Response:"""
                 'partial_text': partial_text,
                 'timing': time.time() - start
             }
+    
+    async def generate_response_with_context(
+        self, 
+        enhanced_query: str, 
+        session_id: str, 
+        project_context: dict
+    ) -> dict:
+        """
+        Generate response using project context for enhanced RAG results.
+        
+        Args:
+            enhanced_query: Query enhanced with project context
+            session_id: Session identifier
+            project_context: Collected project context
+            
+        Returns:
+            Enhanced response dictionary
+        """
+        try:
+            start_time = time.time()
+            
+            # Use parallel processing for enhanced query
+            result = await self.process_parallel(
+                user_input=enhanced_query,
+                session_id=session_id,
+                fast_mode=False
+            )
+            
+            # Add project context info to response metadata
+            result['project_context_used'] = True
+            result['project_type'] = project_context.get('project_type')
+            result['project_sector'] = project_context.get('project_sector')
+            
+            logger.info(f"Enhanced response with project context: {time.time() - start_time:.2f}s")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Enhanced response generation error: {e}")
+            return None
 
 
 # Singleton instance for reuse

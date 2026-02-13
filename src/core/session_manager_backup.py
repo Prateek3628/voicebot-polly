@@ -72,7 +72,8 @@ class SessionManager:
         if not self.redis_available:
             # Store in memory
             self.memory_sessions[session_id] = session_data
-            self.memory_contact_states[session_id] = "initial_collecting_name"
+            # Don't automatically start contact form - let it be triggered by user intent
+            # self.memory_contact_states[session_id] = "initial_collecting_name"
             self.memory_history[session_id] = []
             logger.info(f"Created new session in memory: {session_id}")
             return session_id
@@ -85,10 +86,10 @@ class SessionManager:
                 json.dumps(session_data)
             )
             
-            # Initialize contact form state to collect user details
-            self.set_contact_form_state(session_id, "initial_collecting_name")
+            # Don't automatically start contact form - let it be triggered by user intent
+            # self.set_contact_form_state(session_id, "initial_collecting_name")
             
-            logger.info(f"Created new session: {session_id} with initial user details collection")
+            logger.info(f"Created new session: {session_id}")
             return session_id
         except Exception as e:
             logger.error(f"Failed to create session: {e}")
@@ -287,6 +288,44 @@ class SessionManager:
         except Exception as e:
             logger.error(f"Failed to get session history: {e}")
             return []
+
+    def get_conversation_context(self, session_id: str, pairs_count: int = 6) -> str:
+        """
+        Get conversation context with the last N pairs (user + bot responses).
+        
+        Args:
+            session_id: Session identifier
+            pairs_count: Number of conversation pairs to include
+            
+        Returns:
+            Formatted conversation context string
+        """
+        try:
+            # Get last pairs_count * 2 messages to form pairs
+            history = self.get_session_history(session_id, limit=pairs_count * 2)
+            
+            if not history:
+                return ""
+            
+            # Format as conversation pairs
+            context_parts = []
+            for i in range(0, len(history), 2):
+                if i + 1 < len(history):
+                    user_msg = history[i]
+                    bot_msg = history[i + 1]
+                    
+                    if user_msg.get('role') == 'user' and bot_msg.get('role') == 'bot':
+                        context_parts.append(f"User: {user_msg.get('message', '')}")
+                        context_parts.append(f"Assistant: {bot_msg.get('message', '')}")
+                elif history[i].get('role') == 'user':
+                    # Add incomplete pair (just user message)
+                    context_parts.append(f"User: {history[i].get('message', '')}")
+            
+            return "\n".join(context_parts[-pairs_count * 2:])  # Limit to requested pairs
+            
+        except Exception as e:
+            logger.error(f"Error getting conversation context: {e}")
+            return ""
 
     def get_last_user_query(self, session_id: str, skip_current: bool = False) -> Optional[str]:
         """
@@ -615,6 +654,77 @@ Respond with only the NUMBER (1, 2, 3, etc.) or NONE:"""
             return True
         except Exception as e:
             logger.error(f"Failed to clear contact form: {e}")
+            return False
+    
+    # Project Consultation Management
+    def get_project_consultation_state(self, session_id: str) -> str:
+        """Get project consultation state for session."""
+        try:
+            if self.redis_available:
+                state = self.redis_client.get(f"project_consultation_state:{session_id}")
+                return state if state else "idle"
+            else:
+                return self.memory_sessions.get(session_id, {}).get('project_consultation_state', 'idle')
+        except Exception as e:
+            logger.error(f"Error getting project consultation state: {e}")
+            return "idle"
+    
+    def set_project_consultation_state(self, session_id: str, state: str) -> bool:
+        """Set project consultation state for session."""
+        try:
+            if self.redis_available:
+                self.redis_client.set(f"project_consultation_state:{session_id}", state, ex=config.session_timeout)
+                return True
+            else:
+                if session_id not in self.memory_sessions:
+                    self.memory_sessions[session_id] = {}
+                self.memory_sessions[session_id]['project_consultation_state'] = state
+                return True
+        except Exception as e:
+            logger.error(f"Error setting project consultation state: {e}")
+            return False
+    
+    def get_project_consultation_data(self, session_id: str) -> dict:
+        """Get project consultation data for session."""
+        try:
+            if self.redis_available:
+                data_str = self.redis_client.get(f"project_consultation_data:{session_id}")
+                return json.loads(data_str) if data_str else {}
+            else:
+                return self.memory_sessions.get(session_id, {}).get('project_consultation_data', {})
+        except Exception as e:
+            logger.error(f"Error getting project consultation data: {e}")
+            return {}
+    
+    def set_project_consultation_data(self, session_id: str, data: dict) -> bool:
+        """Set project consultation data for session."""
+        try:
+            if self.redis_available:
+                self.redis_client.set(f"project_consultation_data:{session_id}", json.dumps(data), ex=config.session_timeout)
+                return True
+            else:
+                if session_id not in self.memory_sessions:
+                    self.memory_sessions[session_id] = {}
+                self.memory_sessions[session_id]['project_consultation_data'] = data
+                return True
+        except Exception as e:
+            logger.error(f"Error setting project consultation data: {e}")
+            return False
+    
+    def clear_project_consultation(self, session_id: str) -> bool:
+        """Clear project consultation state and data for session."""
+        try:
+            if self.redis_available:
+                self.redis_client.delete(f"project_consultation_state:{session_id}")
+                self.redis_client.delete(f"project_consultation_data:{session_id}")
+                return True
+            else:
+                if session_id in self.memory_sessions:
+                    self.memory_sessions[session_id].pop('project_consultation_state', None)
+                    self.memory_sessions[session_id].pop('project_consultation_data', None)
+                return True
+        except Exception as e:
+            logger.error(f"Error clearing project consultation: {e}")
             return False
     
     def close(self):

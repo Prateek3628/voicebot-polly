@@ -5,11 +5,17 @@ Loads and embeds documents from multiple formats (PDF, Word, TXT, MD) into Chrom
 
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import List, Dict, Any
 
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(project_root / 'src'))
+
 from vectorstore.chromadb_client import ChromaDBClient
-from config import get_config
+from src.config.settings import config, get_config
 from document_loader import document_loader
 
 # Configure logging

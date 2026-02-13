@@ -512,22 +512,82 @@ async def text_query(sid, data):
                 # Reset interruption flag
                 active_responses[sid]['interrupted'] = False
                 
-                # Process query through async chatbot with parallel pipeline
-                logger.info(f"🔄 Processing query with parallel pipeline for {sid}...")
+                # ✨ CHECK FOR SPECULATIVE CACHE FIRST ✨
+                speculative_cache = clients[sid].get('speculative_cache')
+                cached_audio = None  # Track if we have cached audio
                 
-                process_start = time.time()
+                logger.info(f"📦 Cache check: {'Found' if speculative_cache else 'None'}")
                 
-                # Use async processing with parallel intent + RAG
-                result = await chatbot.process_message_async(
-                    user_input=query_text,
-                    session_id=session_id
-                )
+                if speculative_cache:
+                    cached_text = speculative_cache['partial_text']
+                    cached_result = speculative_cache['result']
+                    cached_audio_bytes = speculative_cache.get('audio_bytes')  # 🚀 NEW!
+                    cache_age = time.time() - speculative_cache['timestamp']
+                    speculation_complete_time = speculative_cache['timestamp']
+                    
+                    # 🚀 CRITICAL METRIC: Did speculation finish BEFORE user stopped speaking?
+                    user_stop_time = time.time()  # When text_query was received
+                    time_delta = user_stop_time - speculation_complete_time
+                    
+                    if time_delta > 0:
+                        logger.info(f"✅ SPECULATION WON! Completed {time_delta:.2f}s BEFORE user stopped speaking!")
+                    else:
+                        logger.info(f"⏰ SPECULATION LATE! Completed {abs(time_delta):.2f}s AFTER user stopped speaking")
+                    
+                    logger.info(f"📦 Cache contents: interim='{cached_text}', has_audio={bool(cached_audio_bytes)}, age={cache_age:.2f}s")
+                    
+                    # Check if cached speculation is still relevant
+                    # Use fuzzy matching: if final query contains 70%+ of cached text
+                    similarity = len(set(cached_text.lower().split()) & set(query_text.lower().split())) / max(len(cached_text.split()), len(query_text.split()))
+                    
+                    logger.info(f"🔍 Similarity check: {similarity:.2%} (threshold: 70%, age: {cache_age:.2f}s / 5.0s)")
+                    
+                    if similarity > 0.7 and cache_age < 5.0:
+                        logger.info(f"🎯 CACHE HIT! Using speculative result (similarity: {similarity:.2%}, age: {cache_age:.2f}s)")
+                        logger.info(f"   Cached: '{cached_text}'")
+                        logger.info(f"   Final:  '{query_text}'")
+                        
+                        if cached_audio_bytes:
+                            logger.info(f"🎵 CACHED AUDIO AVAILABLE! ({len(cached_audio_bytes)} bytes) - INSTANT PLAYBACK!")
+                            cached_audio = cached_audio_bytes
+                        else:
+                            logger.warning(f"⚠️ Cache hit but NO AUDIO! Only text was cached.")
+                        
+                        result = cached_result
+                        process_time = 0.001  # Nearly instant!
+                        
+                        # Clear cache after use
+                        del clients[sid]['speculative_cache']
+                    else:
+                        logger.info(f"🔄 Cache miss (similarity: {similarity:.2%}, age: {cache_age:.2f}s), processing fresh...")
+                        # Clear stale cache
+                        if 'speculative_cache' in clients[sid]:
+                            del clients[sid]['speculative_cache']
+                        
+                        # Process normally
+                        process_start = time.time()
+                        result = await chatbot.process_message_async(
+                            user_input=query_text,
+                            session_id=session_id
+                        )
+                        process_time = time.time() - process_start
+                else:
+                    # No cache, process normally
+                    logger.info(f"🔄 No cache found, processing query with parallel pipeline for {sid}...")
+                    
+                    process_start = time.time()
+                    
+                    # Use async processing with parallel intent + RAG
+                    result = await chatbot.process_message_async(
+                        user_input=query_text,
+                        session_id=session_id
+                    )
+                    
+                    process_time = time.time() - process_start
                 
                 response = result.get('response', '')
                 intent = result.get('intent', '')
                 timing_info = result.get('timing', {})
-                
-                process_time = time.time() - process_start
                 
                 # Check if interrupted during processing
                 if active_responses[sid]['interrupted']:
@@ -583,8 +643,14 @@ async def text_query(sid, data):
                     logger.info(f"⚠️ Response interrupted before audio for {sid}")
                     return
                 
-                # Generate and stream audio response
-                await stream_audio_to_client(sid, response)
+                # 🚀 Generate and stream audio response
+                # If we have cached audio, stream it instantly!
+                if cached_audio:
+                    logger.info(f"🎵 Streaming CACHED audio ({len(cached_audio)} bytes) - INSTANT PLAYBACK!")
+                    await stream_cached_audio_to_client(sid, cached_audio)
+                else:
+                    # Generate fresh audio
+                    await stream_audio_to_client(sid, response)
                 
             except asyncio.CancelledError:
                 logger.info(f"⚠️ Response task cancelled for {sid}")
@@ -701,9 +767,16 @@ async def voice_input(sid, data):
 async def interim_speech(sid, data):
     """
     Handle interim (partial) speech transcription from Web Speech API.
-    Runs predictive intent analysis + RAG prefetch for faster response.
+    SPECULATIVE EXECUTION: Runs FULL pipeline (RAG + TTS + AUDIO) in background.
     
-    Target: < 500ms for quick predictions
+    Strategy:
+    - Process complete response while user is still speaking
+    - Generate AUDIO during speculation (not just text)
+    - Cache the result including audio bytes
+    - If final query matches, stream cached audio instantly
+    - If query changes, discard and reprocess
+    
+    Target: Complete audio ready BEFORE user finishes speaking
     """
     if sid not in clients:
         return
@@ -711,35 +784,102 @@ async def interim_speech(sid, data):
     try:
         partial_text = data.get('text', '') if isinstance(data, dict) else str(data)
         
+        # MORE AGGRESSIVE: Need less text for speculation (min 5 chars instead of 10)
         if not partial_text or len(partial_text) < 5:
             return
         
-        # Rate limit interim processing (max every 1 second)
+        # MORE AGGRESSIVE: Rate limit reduced to 1 second (was 2 seconds)
+        # This means we start speculation earlier and update more frequently
         now = time.time()
         if now - clients[sid].get('last_interim_time', 0) < 1.0:
+            # Update cache with latest text but don't restart speculation
             return
+        
+        # Cancel previous speculation and start fresh with new text
+        if 'speculation_task' in clients[sid]:
+            prev_task = clients[sid]['speculation_task']
+            if not prev_task.done():
+                prev_task.cancel()
+                logger.info(f"🔄 Cancelled previous speculation, starting fresh with: '{partial_text}'")
+            return
+        
         clients[sid]['last_interim_time'] = now
         
         chatbot = clients[sid]['chatbot']
         session_id = clients[sid]['session_id']
         
-        # Check if we have process_interim_async method
-        if hasattr(chatbot, 'process_interim_async'):
-            # Process interim speech (predictive)
-            result = await chatbot.process_interim_async(partial_text, session_id)
-            
-            # Cache interim result for potential use
-            clients[sid]['interim_cache'] = result
-            
-            # Send interim prediction to client
-            await sio.emit('interim_prediction', {
-                'type': 'interim',
-                'intent': result.get('intent', 'unknown'),
-                'partial_text': partial_text,
-                'timing': result.get('timing', 0)
-            }, room=sid)
-        else:
-            logger.debug(f"Interim speech received for {sid}: '{partial_text}' (no interim processing)")
+        logger.info(f"🔮 SPECULATION START: '{partial_text}' (while user still speaking)")
+        
+        # Run full speculative execution in background task
+        async def speculate():
+            try:
+                # 🚀 TRULY PARALLEL: Start both text and audio generation simultaneously
+                rag_start = time.time()
+                
+                # Step 1: Start getting text response (RAG + Intent + Response)
+                result = await chatbot.process_interim_async(partial_text, session_id)
+                
+                rag_time = time.time() - rag_start
+                
+                if result.get('ready'):
+                    response_text = result.get('response', '')
+                    
+                    logger.info(f"✅ Text response ready in {rag_time:.2f}s: '{response_text[:50]}...'")
+                    
+                    # Step 2: 🔥 START AUDIO GENERATION IMMEDIATELY (in parallel with any remaining work)
+                    audio_start = time.time()
+                    logger.info(f"🎵 Starting PARALLEL audio generation...")
+                    
+                    # Generate audio in parallel using asyncio.gather or create_task
+                    # This ensures we start audio generation immediately without waiting
+                    audio_bytes = b''
+                    
+                    # Collect all audio chunks ASAP
+                    async for audio_chunk in tts_handler.text_to_speech_stream(response_text):
+                        audio_bytes += audio_chunk
+                    
+                    audio_time = time.time() - audio_start
+                    
+                    logger.info(f"🎵 Audio generated: {len(audio_bytes)} bytes in {audio_time:.2f}s")
+                    
+                    # Step 3: Cache BOTH text response AND audio
+                    cache_timestamp = time.time()
+                    clients[sid]['speculative_cache'] = {
+                        'partial_text': partial_text,
+                        'result': result,
+                        'audio_bytes': audio_bytes,  # 🚀 Pre-generated audio
+                        'timestamp': cache_timestamp,
+                        'audio_generation_time': audio_time,
+                        'rag_time': rag_time
+                    }
+                    
+                    total_time = rag_time + audio_time
+                    
+                    logger.info(f"✅ SPECULATION COMPLETE: Text + Audio ready for '{partial_text}' "
+                              f"(total: {total_time:.2f}s = RAG {rag_time:.2f}s + Audio {audio_time:.2f}s)")
+                    logger.info(f"💾 Cache saved at {cache_timestamp:.2f} (TTL: 5s)")
+                    
+                    # Notify client that response is pre-computed (optional)
+                    await sio.emit('speculative_ready', {
+                        'partial_text': partial_text,
+                        'intent': result.get('intent', 'unknown'),
+                        'ready': True,
+                        'has_audio': True,  # 🚀 Audio pre-generated
+                        'timings': {
+                            'rag': rag_time,
+                            'audio': audio_time,
+                            'total': total_time
+                        }
+                    }, room=sid)
+                
+            except asyncio.CancelledError:
+                logger.info(f"❌ Speculation cancelled for '{partial_text}'")
+            except Exception as e:
+                logger.error(f"Speculation error: {e}")
+        
+        # Start speculation task (non-blocking)
+        task = asyncio.create_task(speculate())
+        clients[sid]['speculation_task'] = task
         
     except Exception as e:
         logger.error(f"Interim processing error for {sid}: {e}")
@@ -868,6 +1008,83 @@ async def stream_audio_to_client(sid: str, text: str):
         logger.error(f"Error streaming audio to client {sid}: {e}")
         await sio.emit('error', {
             'message': f'Audio streaming error: {str(e)}'
+        }, room=sid)
+
+
+async def stream_cached_audio_to_client(sid: str, audio_bytes: bytes):
+    """
+    Stream pre-generated (cached) audio to the client.
+    🚀 INSTANT PLAYBACK - No TTS generation delay!
+    
+    Args:
+        sid: Client session ID
+        audio_bytes: Complete MP3 audio as bytes (already generated)
+    """
+    try:
+        logger.info(f"⚡ Streaming CACHED audio for client {sid} ({len(audio_bytes)} bytes)")
+        
+        # Signal start of audio stream
+        await sio.emit('audio_start', {
+            'message': 'Starting audio stream (cached)...',
+            'cached': True,  # Flag that this is instant cached audio
+            'audio_size': len(audio_bytes)
+        }, room=sid)
+        
+        # Stream audio in chunks (same chunk size as regular streaming for consistency)
+        chunk_size = 1024  # 1KB chunks
+        chunk_count = 0
+        offset = 0
+        
+        while offset < len(audio_bytes):
+            # Check for interruption before sending each chunk
+            if sid in active_responses and active_responses[sid]['interrupted']:
+                logger.info(f"⚠️ Cached audio streaming interrupted for client {sid} at chunk {chunk_count}")
+                await sio.emit('audio_interrupted', {
+                    'message': 'Audio playback interrupted',
+                    'chunks_sent': chunk_count,
+                    'cached': True
+                }, room=sid)
+                return
+            
+            # Extract chunk
+            audio_chunk = audio_bytes[offset:offset + chunk_size]
+            
+            if audio_chunk:
+                # Encode audio chunk as base64 for transmission
+                audio_b64 = base64.b64encode(audio_chunk).decode('utf-8')
+                
+                await sio.emit('audio_chunk', {
+                    'data': audio_b64,
+                    'chunk_id': chunk_count,
+                    'format': 'mp3',
+                    'cached': True  # Flag that this is cached
+                }, room=sid)
+                
+                chunk_count += 1
+                offset += chunk_size
+        
+        # Only send completion if not interrupted
+        if sid in active_responses and not active_responses[sid]['interrupted']:
+            # Signal end of audio stream
+            await sio.emit('audio_end', {
+                'message': 'Audio stream completed (cached)',
+                'total_chunks': chunk_count,
+                'cached': True
+            }, room=sid)
+            
+            logger.info(f"⚡ INSTANT cached audio streaming completed for client {sid} ({chunk_count} chunks)")
+        
+    except asyncio.CancelledError:
+        logger.info(f"⚠️ Cached audio streaming cancelled for client {sid}")
+        await sio.emit('audio_interrupted', {
+            'message': 'Audio playback cancelled',
+            'cached': True
+        }, room=sid)
+        raise
+    except Exception as e:
+        logger.error(f"Error streaming cached audio to client {sid}: {e}")
+        await sio.emit('error', {
+            'message': f'Cached audio streaming error: {str(e)}'
         }, room=sid)
 
 

@@ -279,7 +279,7 @@ Would you like us to contact you?"""
         Returns:
             Dictionary with next_state, response, and updated form_data
         """
-        from agent import ContactFormState
+        from legacy.agent import ContactFormState
         
         user_input = user_input.strip()
         
