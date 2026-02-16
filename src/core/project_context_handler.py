@@ -45,19 +45,6 @@ class ProjectContextHandler:
             # Get or create LLM instance with optimized settings for speed
             llm = ProjectContextHandler.get_llm()
             
-            # Quick optimization: If user input is very short, do fast simple extraction
-            if len(user_input) < 50 and not existing_context:
-                # User said something short like "I want to build an app"
-                # Skip complex analysis, just extract basics quickly
-                simple_result = {
-                    "has_enough_context": False,
-                    "extracted_info": {},
-                    "missing_info": ["project details"],
-                    "next_question": "That sounds interesting! Could you tell me more about your project? What type of application are you thinking of - mobile app, website, or both? And what industry is it for?",
-                    "reasoning": "Quick response for simple query"
-                }
-                return simple_result
-            
             # Prepare context summary
             context_summary = ""
             if existing_context:
@@ -71,24 +58,50 @@ class ProjectContextHandler:
                     context_parts.append(f"Features: {features}")
                 context_summary = " | ".join(context_parts)
             
-            # Prepare conversation history summary (limit to last 5 for performance)
+            # Prepare conversation history summary - FULL 6 pairs of messages
             history_summary = ""
             if conversation_history:
-                recent_messages = conversation_history[-5:]  # Reduced from 10 to 5 for speed
+                recent_messages = conversation_history[-12:]  # Last 12 messages = 6 pairs (user + bot)
                 history_parts = []
                 for msg in recent_messages:
                     if isinstance(msg, dict):
                         role = msg.get('role', 'unknown')
-                        content = msg.get('content', '')[:150]  # Reduced from 200 to 150
-                        history_parts.append(f"{role}: {content}")
-                history_summary = " | ".join(history_parts)
+                        content = msg.get('content', '')  # FULL content, no truncation
+                        history_parts.append(f"{role.upper()}: {content}")
+                    else:
+                        # Handle LangChain message objects
+                        if hasattr(msg, 'type'):
+                            role = 'USER' if msg.type == 'human' else 'BOT'
+                            content = msg.content if hasattr(msg, 'content') else str(msg)
+                            history_parts.append(f"{role}: {content}")
+                history_summary = "\n".join(history_parts)  # Use newlines for clarity
+            
+            logger.info(f"📜 CONVERSATION HISTORY BEING SENT TO LLM:\n{history_summary if history_summary else 'EMPTY!'}")
 
             prompt = f"""You are analyzing a user's project inquiry to determine what follow-up questions are needed.
-CRITICAL: Use conversation history to avoid asking questions that have already been answered or discussed.
+CRITICAL: Read the FULL conversation history below to understand the complete context and what has already been discussed.
 
 Current user input: "{user_input}"
-Existing context: {context_summary or "None"}
-Recent conversation: {history_summary or "No previous conversation"}
+Existing context extracted so far: {context_summary or "None"}
+
+COMPLETE CONVERSATION HISTORY (Last 6 exchanges):
+{history_summary if history_summary else "No previous conversation"}
+
+🎯 UNDERSTANDING USER ANSWERS IN CONTEXT:
+- Look at the conversation history to see what the BOT just asked
+- The user's current input is ALWAYS an answer to the BOT's last question
+- IF bot just asked "What type - mobile, website, or both?" and user says "both" → Extract project_type: "both"
+- IF bot just asked about industry and user says "ecommerce" or "telecom industry" → Extract project_sector: that industry
+- IF bot just asked about features and user describes functionality → Extract ALL mentioned features to project_features array
+- Short answers like "both", "mobile app", "healthcare", "ecommerce" ARE valid complete answers
+- ALWAYS cross-reference the conversation history to understand what question the user is answering
+
+📋 FEATURE EXTRACTION RULES:
+- Look for ANY functionality mentioned: "user onboarding" → extract "user onboarding"
+- "payment gateway" → extract "payment gateway"  
+- "all other features for ecommerce" → extract "ecommerce features", "product catalog", "shopping cart"
+- Break down descriptions into specific feature items
+- If user mentions features, ALWAYS populate project_features array with at least those items
 
 IMMEDIATE RECOGNITION RULES:
 🚨 IF user input contains DETAILED SPECIFICATIONS like numbered requirements, feature lists, or comprehensive project descriptions:
@@ -98,7 +111,7 @@ IMMEDIATE RECOGNITION RULES:
 
 🚨 IF user already answered "both" or "website and mobile" in conversation history:
    → Don't ask about project type again
-   → Focus on what they need help with
+   → If they also mentioned industry, move to asking about specific features/requirements
 
 🚨 IF user provided extensive requirements (like chess platform, tournament management, user roles, payment systems):
    → Recognize this as a COMPLETE project specification
@@ -106,14 +119,27 @@ IMMEDIATE RECOGNITION RULES:
 
 CONTEXT SUFFICIENCY RULES:
 ✅ SUFFICIENT CONTEXT = has_enough_context: true when:
-- User provided detailed project specifications with multiple features
-- User confirmed project type (website, mobile, both) + industry + features
+- User provided detailed project specifications with multiple features listed
+- User confirmed project type + industry + specific features/functionality described
 - User says "no additional features" after providing requirements
-- ANY comprehensive requirements document is provided
+- ANY comprehensive requirements document with multiple features is provided
 
-⚠️ INSUFFICIENT CONTEXT = has_enough_context: false ONLY when:
-- User said something vague like "I want an app" with NO details
-- Genuinely missing critical information
+⚠️ INSUFFICIENT CONTEXT = has_enough_context: false when:
+- Missing project_type → Ask: "What type of solution are you looking for - mobile app, website, or both?"
+- Missing project_sector → Ask: "What industry or sector is this for?"
+- Missing project_features (or features list is empty) → Ask: "Great! Can you tell me what specific features or functionality you need for your [type] in the [sector] industry?"
+- User said something vague without describing what they want to build
+
+CRITICAL FEATURE COLLECTION:
+- ALWAYS ask for features if project_features list is empty or not mentioned
+- Even if we have type + sector, we MUST ask about features before marking context as sufficient
+- Features are REQUIRED for cost/timeline estimates
+
+ASKING FOLLOW-UP QUESTIONS (in order):
+1. IF missing project_type → Ask: "What type of solution are you looking for - mobile app, website, or both?"
+2. IF missing project_sector → Ask: "What industry or sector is this for?"
+3. IF missing features (empty or null) → Ask: "Great! Can you tell me what specific features or functionality you need for your [type] in the [sector] industry?"
+4. NEVER ask the same question the bot just asked in previous message
 
 SPECIAL RECOGNITION PATTERNS:
 - "Chess Tournament & League Management Platform" + detailed features = COMPLETE specification
@@ -127,14 +153,18 @@ RESPONSE FORMAT (JSON):
     "extracted_info": {{
         "project_type": "extracted type or null",
         "project_sector": "extracted sector or null", 
-        "project_features": ["comprehensive list of features extracted"]
+        "project_features": ["comprehensive list of ALL features mentioned"]
     }},
-    "missing_info": ["list of missing key information"],
+    "missing_info": ["list of what's missing: type, sector, or features"],
     "next_question": "specific question to ask or null if enough context",
     "reasoning": "detailed explanation"
 }}
 
-CRITICAL: If user provided ANY detailed requirements or specifications, ALWAYS set has_enough_context: true
+CRITICAL RULES:
+1. If user provided ANY features/functionality description, extract them to project_features array
+2. If project_features is empty or null, ALWAYS set has_enough_context: false
+3. next_question should ask for the FIRST missing piece: type, then sector, then features
+4. Even brief descriptions like "recharge app" count as a feature
 
 Respond with ONLY valid JSON:"""
 
@@ -241,10 +271,94 @@ Provide a helpful response that acknowledges their input and asks for clarificat
             Dictionary with response, updated context, and completion status
         """
         try:
+            # INITIAL INTELLIGENCE CHECK: Does user message already contain all info?
+            user_lower = user_input.lower().strip()
+            
+            # Check if user provided a comprehensive description upfront
+            has_type_mentioned = any(word in user_lower for word in ['mobile app', 'website', 'web app', 'both', 'mobile and web', 'app and website', 'web and mobile'])
+            
+            # Check for industry/sector indicators
+            common_industries = ['telecom', 'healthcare', 'education', 'finance', 'ecommerce', 'e-commerce', 'retail', 'travel', 'food', 'real estate', 'logistics', 'entertainment', 'gaming', 'fitness', 'restaurant']
+            has_sector_mentioned = any(industry in user_lower for industry in common_industries)
+            
+            # Check for feature indicators
+            feature_keywords = ['onboarding', 'payment', 'gateway', 'login', 'registration', 'authentication', 
+                               'cart', 'checkout', 'add to cart', 'functionality', 'features', 'user management']
+            has_features_mentioned = any(keyword in user_lower for keyword in feature_keywords)
+            
+            # If user provided comprehensive info upfront (type + sector + features), skip step-by-step collection
+            comprehensive_input = (has_type_mentioned and has_sector_mentioned and 
+                                  has_features_mentioned and len(user_input.split()) > 10)
+            
+            if comprehensive_input:
+                logger.info("🎯 User provided comprehensive project details upfront - going directly to LLM extraction")
+                # Skip quick extraction, go straight to full LLM analysis
+                quick_extracted = {}
+            else:
+                # User didn't provide everything upfront - use step-by-step quick extraction
+                quick_extracted = {}
+                
+                # Extract project type from simple answers
+                if user_lower in ['both', 'both of them', 'website and mobile', 'mobile and website', 'app and website']:
+                    quick_extracted['project_type'] = 'both'
+                elif user_lower in ['mobile', 'mobile app', 'app', 'mobile application']:
+                    quick_extracted['project_type'] = 'mobile app'
+                elif user_lower in ['website', 'web', 'web app', 'web application']:
+                    quick_extracted['project_type'] = 'website'
+                
+                # Extract industry/sector from common answers
+                for industry in common_industries:
+                    if industry in user_lower or user_lower == industry.replace('-', ' '):
+                        quick_extracted['project_sector'] = industry
+                        break
+            
+            # Merge quick extraction with existing context
+            if quick_extracted:
+                for key, value in quick_extracted.items():
+                    if value:
+                        existing_context[key] = value  # Always update, even if exists
+                        logger.info(f"Quick extracted {key}: {value} | Full context now: {existing_context}")
+            
+            # After quick extraction, check what's missing and ask next question
+            has_type = bool(existing_context.get('project_type'))
+            has_sector = bool(existing_context.get('project_sector'))
+            features_list = existing_context.get('project_features', [])
+            has_features = len(features_list) >= 1
+            
+            logger.info(f"Context check - Type: {has_type}, Sector: {has_sector}, Features: {has_features} | Context: {existing_context}")
+            
+            # If we just extracted something simple (type or sector), immediately ask for the next missing piece
+            # BUT if user provided a comprehensive/long answer, don't return early - let LLM analyze it
+            if quick_extracted and len(user_input.split()) < 5 and not comprehensive_input:  # Short simple answer
+                if not has_type:
+                    return {
+                        'response': "What type of solution are you looking for - mobile app, website, or both?",
+                        'project_context': existing_context,
+                        'needs_more_context': True,
+                        'next_state': 'collecting_project_context'
+                    }
+                elif not has_sector:
+                    return {
+                        'response': "Great! What industry or sector is this for?",
+                        'project_context': existing_context,
+                        'needs_more_context': True,
+                        'next_state': 'collecting_project_context'
+                    }
+                elif not has_features:
+                    project_type = existing_context.get('project_type', 'solution')
+                    sector = existing_context.get('project_sector', 'your business')
+                    return {
+                        'response': f"Perfect! Can you tell me what specific features or functionality you need for your {project_type} in the {sector} industry?",
+                        'project_context': existing_context,
+                        'needs_more_context': True,
+                        'next_state': 'collecting_project_context'
+                    }
+            
             # Check if existing context is already sufficient
             has_type = bool(existing_context.get('project_type'))
             has_sector = bool(existing_context.get('project_sector'))
-            has_features = len(existing_context.get('project_features', [])) >= 3
+            features_list = existing_context.get('project_features', [])
+            has_features = len(features_list) >= 1  # At least 1 feature required
             
             # If we already have sufficient context, don't re-analyze
             if has_type and has_sector and has_features:
@@ -282,6 +396,8 @@ Provide a helpful response that acknowledges their input and asks for clarificat
             updated_context = existing_context.copy()
             extracted_info = analysis.get('extracted_info', {})
             
+            logger.info(f"LLM Analysis result: has_enough={analysis.get('has_enough_context')}, extracted={extracted_info}")
+            
             # Merge extracted information
             for key, value in extracted_info.items():
                 if value:  # Only update if we extracted something meaningful
@@ -289,8 +405,128 @@ Provide a helpful response that acknowledges their input and asks for clarificat
                         # Merge feature lists
                         existing_features = updated_context.get('project_features', [])
                         updated_context['project_features'] = list(set(existing_features + value))
+                        logger.info(f"Updated features: {updated_context['project_features']}")
                     else:
                         updated_context[key] = value
+                        logger.info(f"Updated {key}: {value}")
+            
+            # OVERRIDE LLM: If we have all three pieces (type + sector + features), mark as complete!
+            if (updated_context.get('project_type') and 
+                updated_context.get('project_sector') and 
+                len(updated_context.get('project_features', [])) >= 1):
+                logger.info(f"✅ OVERRIDE: Have type + sector + features - marking context as COMPLETE")
+                analysis['has_enough_context'] = True
+            
+            # CRITICAL FALLBACK: Check if bot just asked for features and user responded
+            # Look at conversation history to see if last bot message was asking for features
+            bot_just_asked_for_features = False
+            if conversation_history and len(conversation_history) > 0:
+                last_bot_msg = None
+                for msg in reversed(conversation_history):
+                    if isinstance(msg, dict) and msg.get('role') == 'bot':
+                        last_bot_msg = msg.get('content', '').lower()
+                        break
+                    elif hasattr(msg, 'type') and msg.type == 'ai':
+                        last_bot_msg = msg.content.lower() if hasattr(msg, 'content') else ''
+                        break
+                
+                if last_bot_msg and ('features' in last_bot_msg or 'functionality' in last_bot_msg):
+                    bot_just_asked_for_features = True
+                    logger.info(f"🎯 Bot just asked for features - user response: '{user_input}'")
+            
+            # AGGRESSIVE FALLBACK: If bot asked for features and we have type + sector but NO features extracted
+            if (bot_just_asked_for_features and 
+                updated_context.get('project_type') and 
+                updated_context.get('project_sector') and 
+                len(updated_context.get('project_features', [])) == 0):
+                
+                logger.warning(f"⚠️ Bot asked for features, user responded, but LLM extracted NOTHING. Forcing feature extraction!")
+                user_lower = user_input.lower()
+                sector = updated_context.get('project_sector', '').lower()
+                
+                # Check for "basic/standard/common/all" keywords
+                if any(word in user_lower for word in ['basic', 'standard', 'common', 'all', 'typical', 'usual', 'normal']):
+                    if 'ecommerce' in sector or 'e-commerce' in sector:
+                        updated_context['project_features'] = [
+                            'product catalog', 'shopping cart', 'checkout', 'payment gateway',
+                            'user registration', 'user authentication', 'order management',
+                            'search and filters', 'product reviews', 'wishlist'
+                        ]
+                        logger.info(f"✅ Added standard ecommerce features")
+                    else:
+                        updated_context['project_features'] = [
+                            'user authentication', 'user management', 'dashboard', 
+                            'core functionality', 'admin panel'
+                        ]
+                        logger.info(f"✅ Added generic standard features")
+                    analysis['has_enough_context'] = True
+                else:
+                    # Extract any mentioned keywords
+                    feature_keywords = ['onboarding', 'payment', 'gateway', 'login', 'registration', 
+                                       'authentication', 'user management', 'dashboard', 'analytics',
+                                       'search', 'filter', 'cart', 'checkout', 'notification',
+                                       'messaging', 'chat', 'profile', 'settings', 'admin']
+                    
+                    found_features = [kw for kw in feature_keywords if kw in user_lower]
+                    
+                    if found_features:
+                        updated_context['project_features'] = found_features
+                        logger.info(f"✅ Extracted keywords: {found_features}")
+                    else:
+                        # User mentioned something about features - just accept it
+                        updated_context['project_features'] = ['features as described by user']
+                        logger.info(f"✅ Fallback: accepting user's feature description")
+                    analysis['has_enough_context'] = True
+            
+            # OLD FALLBACK: If we have type + sector but no features, and user provided detailed input, 
+            # do simple keyword extraction as backup
+            elif (updated_context.get('project_type') and 
+                updated_context.get('project_sector') and 
+                len(updated_context.get('project_features', [])) == 0 and
+                len(user_input.split()) > 3):  # User provided some description (lowered from 8 to 3)
+                
+                logger.warning(f"LLM failed to extract features from user input: '{user_input}', using keyword fallback")
+                
+                # Check if user said "basic features" or "standard features" for ecommerce
+                user_lower = user_input.lower()
+                if 'basic' in user_lower or 'standard' in user_lower or 'common' in user_lower or 'all' in user_lower:
+                    sector = updated_context.get('project_sector', '').lower()
+                    if 'ecommerce' in sector or 'e-commerce' in sector:
+                        # Add standard ecommerce features
+                        updated_context['project_features'] = [
+                            'product catalog', 'shopping cart', 'checkout', 'payment gateway',
+                            'user registration', 'user authentication', 'order management',
+                            'search and filters', 'product reviews', 'wishlist'
+                        ]
+                        logger.info(f"Added standard ecommerce features: {updated_context['project_features']}")
+                        analysis['has_enough_context'] = True
+                    else:
+                        # Generic basic features
+                        updated_context['project_features'] = ['user authentication', 'dashboard', 'basic functionality']
+                        logger.info(f"Added generic basic features")
+                        analysis['has_enough_context'] = True
+                else:
+                    # Simple keyword extraction for common features
+                    feature_keywords = ['onboarding', 'payment', 'gateway', 'login', 'registration', 
+                                       'authentication', 'user management', 'dashboard', 'analytics',
+                                       'search', 'filter', 'cart', 'checkout', 'notification',
+                                       'messaging', 'chat', 'profile', 'settings', 'admin panel']
+                    
+                    found_features = []
+                    for keyword in feature_keywords:
+                        if keyword in user_lower:
+                            found_features.append(keyword)
+                    
+                    if found_features:
+                        updated_context['project_features'] = found_features
+                        logger.info(f"Keyword extracted features: {found_features}")
+                        # Force has_enough_context to true since we have all three pieces
+                        analysis['has_enough_context'] = True
+                    else:
+                        # User mentioned features but we can't extract - just mark as basic features
+                        updated_context['project_features'] = ['basic features as requested']
+                        logger.info(f"Fallback: marking as 'basic features'")
+                        analysis['has_enough_context'] = True
             
             # Determine response based on analysis
             if analysis.get('has_enough_context', False):

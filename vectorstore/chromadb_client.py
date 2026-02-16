@@ -21,8 +21,12 @@ logger = logging.getLogger(__name__)
 class ChromaDBClient:
     """ChromaDB client for vector database operations."""
     
-    def __init__(self):
-        """Initialize ChromaDB client and embedding model."""
+    def __init__(self, auto_recover=True):
+        """Initialize ChromaDB client and embedding model.
+        
+        Args:
+            auto_recover: If True, attempt to recover from database corruption
+        """
         try:
             # Store collection name
             self.collection_name = config.chromadb_collection_name
@@ -30,11 +34,26 @@ class ChromaDBClient:
             # Ensure persist directory exists
             Path(config.chromadb_persist_directory).mkdir(parents=True, exist_ok=True)
             
-            # Initialize ChromaDB client
-            self.client = chromadb.PersistentClient(
-                path=config.chromadb_persist_directory,
-                settings=ChromaSettings(anonymized_telemetry=False)
-            )
+            # Initialize ChromaDB client with error recovery
+            try:
+                self.client = chromadb.PersistentClient(
+                    path=config.chromadb_persist_directory,
+                    settings=ChromaSettings(anonymized_telemetry=False)
+                )
+            except (Exception, RuntimeError) as db_error:
+                error_msg = str(db_error)
+                if auto_recover and ("panic" in error_msg.lower() or "range" in error_msg.lower() or "tenant" in error_msg.lower()):
+                    logger.error(f"ChromaDB corruption detected: {db_error}")
+                    logger.warning("Attempting to recover by reinitializing database...")
+                    self._recover_corrupted_database()
+                    # Retry initialization
+                    self.client = chromadb.PersistentClient(
+                        path=config.chromadb_persist_directory,
+                        settings=ChromaSettings(anonymized_telemetry=False)
+                    )
+                    logger.info("✅ ChromaDB recovered successfully")
+                else:
+                    raise
             
             # Initialize embeddings
             self.embeddings = HuggingFaceEmbeddings(
@@ -64,6 +83,28 @@ class ChromaDBClient:
             
         except Exception as e:
             logger.error(f"Failed to initialize ChromaDB client: {e}")
+            raise
+    
+    def _recover_corrupted_database(self):
+        """Recover from corrupted ChromaDB by backing up and recreating."""
+        import shutil
+        from datetime import datetime
+        
+        try:
+            db_path = Path(config.chromadb_persist_directory)
+            if db_path.exists():
+                # Create backup with timestamp
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_path = db_path.parent / f"{db_path.name}.backup.{timestamp}"
+                
+                logger.warning(f"Backing up corrupted database to: {backup_path}")
+                shutil.move(str(db_path), str(backup_path))
+                
+                # Recreate directory
+                db_path.mkdir(parents=True, exist_ok=True)
+                logger.info(f"Created fresh database directory: {db_path}")
+        except Exception as e:
+            logger.error(f"Error during database recovery: {e}")
             raise
     
     def load_and_chunk_document_from_text(self, text: str, metadata: Dict[str, Any]) -> List[Document]:

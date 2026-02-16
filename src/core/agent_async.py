@@ -63,7 +63,7 @@ class AsyncChatbotAgent:
         
         # Fast LLM for intent classification
         self.fast_llm = ChatOpenAI(
-            model="gpt-4.1-nano",
+            model="gpt-4o",
             temperature=0.1,
             openai_api_key=config.openai_api_key,
             max_tokens=50,  # Minimal tokens for intent
@@ -72,7 +72,7 @@ class AsyncChatbotAgent:
         
         # Standard LLM for response generation
         self.llm = ChatOpenAI(
-            model="gpt-4.1-nano",
+            model="gpt-4o",
             temperature=0.3,
             openai_api_key=config.openai_api_key,
             max_tokens=300,
@@ -469,10 +469,10 @@ If you can't provide more details based on the documents, say "I don't have addi
             self.conversation_history[session_id] = self.conversation_history[session_id][-12:]
     
     def get_conversation_history(self, session_id: str) -> List:
-        """Get LangChain message history for a session."""
+        """Get LangChain message history for a session. Returns last 12 messages (6 pairs)."""
         if not session_id or session_id not in self.conversation_history:
             return []
-        return self.conversation_history[session_id][-6:]  # Return last 6 messages for context
+        return self.conversation_history[session_id][-12:]  # Return last 12 messages = 6 user-bot pairs
     
     def clear_conversation_history(self, session_id: str):
         """Clear conversation history for a session."""

@@ -26,6 +26,7 @@ class AsyncChatBot:
         """Initialize async chatbot with all components."""
         self.agent = get_async_agent()
         self.session_manager = session_manager
+        self._processing_locks = {}  # Track which sessions are currently processing
         logger.info("AsyncChatBot initialized")
     
     def start_session(self) -> Tuple[str, str]:
@@ -74,11 +75,59 @@ class AsyncChatBot:
             # Update session activity
             self.session_manager.update_session_activity(session_id)
             
+            # CRITICAL DEDUPLICATION: Check if this exact message was just processed
+            try:
+                history = self.agent.get_conversation_history(session_id)
+                if history and len(history) >= 2:
+                    # Check last 2 messages: should be [user message, bot response]
+                    last_msg = history[-1]
+                    second_last = history[-2] if len(history) >= 2 else None
+                    
+                    if not last_msg or not second_last:
+                        # Skip deduplication if messages are None
+                        pass
+                    else:
+                        # If the second-to-last message is from user and matches current input,
+                        # AND last message is from bot (meaning we already processed this)
+                        # Then this is a duplicate - return the previous bot response
+                        is_bot_last = False
+                        if hasattr(last_msg, 'type'):
+                            is_bot_last = last_msg.type == 'ai'
+                        elif isinstance(last_msg, dict):
+                            is_bot_last = last_msg.get('role') == 'bot'
+                        
+                        if is_bot_last and second_last:
+                            user_msg_content = None
+                            if hasattr(second_last, 'type') and second_last.type == 'human':
+                                user_msg_content = second_last.content if hasattr(second_last, 'content') else None
+                            elif isinstance(second_last, dict) and second_last.get('role') == 'user':
+                                user_msg_content = second_last.get('content')
+                            
+                            if user_msg_content and user_msg_content == user_input:
+                                logger.warning(f"⚠️ DUPLICATE REQUEST DETECTED: '{user_input[:50]}...' - Returning cached response")
+                                # Return the previous bot response
+                                cached_response = ''
+                                if hasattr(last_msg, 'content'):
+                                    cached_response = last_msg.content
+                                elif isinstance(last_msg, dict):
+                                    cached_response = last_msg.get('content', '')
+                                
+                                if cached_response:
+                                    return {
+                                        'response': cached_response,
+                                        'intent': 'cached_duplicate',
+                                        'timing': {'total': 0.001},
+                                        'session_id': session_id,
+                                        'duplicate': True
+                                    }
+            except Exception as e:
+                logger.error(f"Error in deduplication check: {e}")
+            
             # Append user message to history
             try:
                 self.session_manager.append_message_to_history(session_id, 'user', user_input)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Error appending message to history: {e}")
             
             # Check contact form state
             form_state = self.session_manager.get_contact_form_state(session_id)
@@ -90,8 +139,19 @@ class AsyncChatBot:
             # Handle initial consent asking (NEW FLOW)
             if form_state == ContactFormState.ASKING_INITIAL_CONSENT.value:
                 user_lower = user_input.lower().strip()
-                # Check for affirmative responses
-                if any(word in user_lower for word in ['yes', 'yeah', 'yep', 'sure', 'okay', 'ok', 'fine', 'please', 'i would', 'i want']):
+                
+                # Check if user is asking about a project instead of answering consent
+                is_project_inquiry = any(phrase in user_lower for phrase in [
+                    'build an app', 'build a website', 'develop', 'create an app',
+                    'make an app', 'need an app', 'cost', 'price', 'timeline'
+                ])
+                
+                if is_project_inquiry:
+                    # User is asking about a project, skip consent and help them
+                    self.session_manager.set_contact_form_state(session_id, ContactFormState.IDLE.value)
+                    # Continue to normal flow below (don't return here)
+                # Check for affirmative responses to consent question
+                elif any(word in user_lower for word in ['yes', 'yeah', 'yep', 'sure', 'okay', 'ok', 'fine', 'please']):
                     # User wants to provide details - collect name and email in ONE question
                     self.session_manager.set_contact_form_state(session_id, ContactFormState.COLLECTING_NAME_AND_EMAIL.value)
                     return {
@@ -238,11 +298,12 @@ If you can't find something, return null for that field."""
             # Handle project context collection flow (intelligent, not hardcoded)
             if form_state == ContactFormState.COLLECTING_PROJECT_CONTEXT.value:
                 project_context = self.session_manager.get_project_context(session_id) or {}
+                logger.info(f"Retrieved project context for session {session_id}: {project_context}")
                 
                 # Get conversation history to avoid asking redundant questions
                 conversation_history = []
                 try:
-                    conversation_history = self.session_manager.get_conversation_history(session_id)
+                    conversation_history = self.agent.get_conversation_history(session_id)
                 except Exception:
                     pass
                 
@@ -251,6 +312,8 @@ If you can't find something, return null for that field."""
                     existing_context=project_context,
                     conversation_history=conversation_history
                 )
+                
+                logger.info(f"Project inquiry result: needs_more={result.get('needs_more_context')}, context={result.get('project_context')}")
                 
                 # Update session based on intelligent analysis
                 if result.get('needs_more_context', False):
@@ -261,8 +324,12 @@ If you can't find something, return null for that field."""
                     self.session_manager.set_contact_form_state(session_id, ContactFormState.IDLE.value)
                 
                 self.session_manager.set_project_context(session_id, result['project_context'])
+                logger.info(f"Saved project context for session {session_id}: {result['project_context']}")
                 
                 response = result['response']
+                
+                # CRITICAL: Add to agent's conversation history so it's available for next turn
+                self.agent.add_to_conversation_history(session_id, user_input, response)
                 
                 try:
                     self.session_manager.append_message_to_history(session_id, 'bot', response)
@@ -276,7 +343,65 @@ If you can't find something, return null for that field."""
                     'session_id': session_id
                 }
             
-            # PARALLEL PROCESSING PIPELINE
+            # CHECK FOR PROJECT INQUIRY FIRST - Before doing expensive RAG!
+            # Quick check: Does this look like a project inquiry that needs context collection?
+            try:
+                user_lower = user_input.lower()
+                looks_like_project_inquiry = any(phrase in user_lower for phrase in [
+                    'i want to build', 'build an app', 'build a website', 'develop an app', 
+                    'create an app', 'make an app', 'need an app', 'looking to build',
+                    'cost', 'price', 'timeline', 'how much', 'how long', 'estimate'
+                ])
+                
+                if looks_like_project_inquiry:
+                    # Check if we already have context or need to collect it
+                    project_context = self.session_manager.get_project_context(session_id) or {}
+                    conversation_history = []
+                    try:
+                        conversation_history = self.agent.get_conversation_history(session_id)
+                    except Exception:
+                        pass
+                    
+                    # Analyze context needs
+                    result_analysis = ProjectContextHandler.handle_project_inquiry_intelligently(
+                        user_input=user_input,
+                        existing_context=project_context,
+                        conversation_history=conversation_history
+                    )
+                    
+                    if result_analysis.get('needs_more_context', False):
+                        # Need to collect more context - DON'T do RAG yet!
+                        self.session_manager.set_contact_form_state(
+                            session_id, ContactFormState.COLLECTING_PROJECT_CONTEXT.value
+                        )
+                        response = result_analysis['response']
+                        self.session_manager.set_project_context(session_id, result_analysis['project_context'])
+                        
+                        # Add to agent's conversation history
+                        self.agent.add_to_conversation_history(session_id, user_input, response)
+                        
+                        try:
+                            self.session_manager.append_message_to_history(session_id, 'bot', response)
+                        except Exception:
+                            pass
+                        
+                        return {
+                            'response': response,
+                            'intent': 'project_inquiry_collecting',
+                            'timing': {'total': time.time() - total_start},
+                            'session_id': session_id
+                        }
+                    else:
+                        # We have enough context - NOW do RAG with enhanced query
+                        enhanced_query = ProjectContextHandler.get_contextual_prompt(user_input, result_analysis['project_context'])
+                        logger.info(f"Context complete, running RAG with enhanced query: {enhanced_query[:100]}...")
+                        # Continue to parallel processing below with enhanced query
+                        user_input = enhanced_query
+            except Exception as e:
+                logger.error(f"Error in project inquiry pre-check: {e}", exc_info=True)
+                # Continue to normal processing if pre-check fails
+            
+            # PARALLEL PROCESSING PIPELINE (RAG + Intent + Response)
             result = await self.agent.process_parallel(
                 user_input=user_input,
                 session_id=session_id,
@@ -286,14 +411,15 @@ If you can't find something, return null for that field."""
             response = result.get('response', '')
             intent = result.get('intent', '')
             
-            # Handle project inquiry intent - intelligent context collection
+            # Legacy handler for project_inquiry intent (if it comes from intent classification)
+            # This is a fallback - the above check should catch most cases
             if intent == 'project_inquiry':
                 project_context = self.session_manager.get_project_context(session_id) or {}
                 
                 # Get conversation history to avoid asking redundant questions
                 conversation_history = []
                 try:
-                    conversation_history = self.session_manager.get_conversation_history(session_id)
+                    conversation_history = self.agent.get_conversation_history(session_id)
                 except Exception:
                     pass
                 
@@ -311,6 +437,9 @@ If you can't find something, return null for that field."""
                     )
                     response = result_analysis['response']
                     self.session_manager.set_project_context(session_id, result_analysis['project_context'])
+                    
+                    # Add to agent's conversation history
+                    self.agent.add_to_conversation_history(session_id, user_input, response)
                 else:
                     # We have enough context, enhance the query with context for better RAG results
                     enhanced_query = ProjectContextHandler.get_contextual_prompt(user_input, result_analysis['project_context'])

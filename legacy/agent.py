@@ -107,7 +107,7 @@ class ChatbotAgent:
         # Initialize LLM with OpenAI's store parameter for automatic conversation storage
         # This replaces Redis caching - OpenAI stores conversations for 30 days
         self.llm = ChatOpenAI(
-            model="gpt-4.1-nano",
+            model="gpt-4o",
             temperature=0.3,  # Increased for more creative, human-like responses
             openai_api_key=config.openai_api_key,
             model_kwargs={

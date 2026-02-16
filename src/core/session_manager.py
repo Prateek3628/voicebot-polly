@@ -45,7 +45,7 @@ class SessionManager:
             
             # Initialize LLM for semantic matching
             self.llm = ChatOpenAI(
-                model="gpt-4.1-nano",
+                model="gpt-4o",
                 temperature=0.0,
                 openai_api_key=config.openai_api_key
             )
