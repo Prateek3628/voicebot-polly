@@ -25,6 +25,7 @@ class IntentType(Enum):
     FOLLOWUP = "followup"
     CONTACT_REQUEST = "contact_request"
     FEEDBACK = "feedback"  # User wants to share feedback/message with team
+    PROJECT_ENQUIRY = "project_enquiry"  # User wants to enquire about building a project/app/software
     QUERY = "query"
     GOODBYE = "goodbye"
     UNCLEAR = "unclear"
@@ -33,10 +34,7 @@ class IntentType(Enum):
 class ContactFormState(Enum):
     """Contact form collection states."""
     IDLE = "idle"
-    # Initial consent asking
-    ASKING_INITIAL_CONSENT = "asking_initial_consent"  # Ask if user wants to provide details
-    COLLECTING_NAME_AND_EMAIL = "collecting_name_and_email"  # Collect both in one go
-    # Initial collection at session start (legacy - not used now)
+    # Initial collection at session start
     INITIAL_COLLECTING_NAME = "initial_collecting_name"
     INITIAL_COLLECTING_EMAIL = "initial_collecting_email"
     INITIAL_COLLECTING_PHONE = "initial_collecting_phone"
@@ -45,9 +43,6 @@ class ContactFormState(Enum):
     ASKING_SCHEDULE_CHANGE = "asking_schedule_change"  # Ask if user wants to keep or change existing schedule
     COLLECTING_DATETIME = "collecting_datetime"
     COLLECTING_TIMEZONE = "collecting_timezone"
-    # Project inquiry context collection
-    COLLECTING_PROJECT_CONTEXT = "collecting_project_context"  # Intelligent context collection
-    PROJECT_CONTEXT_COMPLETE = "project_context_complete"
     # Legacy states (for backward compatibility)
     COLLECTING_NAME = "collecting_name"
     COLLECTING_EMAIL = "collecting_email"
@@ -107,7 +102,7 @@ class ChatbotAgent:
         # Initialize LLM with OpenAI's store parameter for automatic conversation storage
         # This replaces Redis caching - OpenAI stores conversations for 30 days
         self.llm = ChatOpenAI(
-            model="gpt-4o",
+            model="gpt-4.1-nano",
             temperature=0.3,  # Increased for more creative, human-like responses
             openai_api_key=config.openai_api_key,
             model_kwargs={
@@ -121,7 +116,7 @@ class ChatbotAgent:
             goal='As Anup, represent TechGropse and help users with all aspects of the company - services, pricing, projects, capabilities, and general inquiries',
             backstory="""You are Anup, the official virtual representative of TechGropse, speaking on behalf of the company. 
             You help users with everything related to TechGropse - app development services, pricing, timelines, 
-            projects, capabilities, meeting scheduling, and general company information. You always speak as 'we at TechGropse' when 
+            projects, capabilities, and general company information. You always speak as 'we at TechGropse' when 
             referring to the company (e.g., 'we at TechGropse develop', 'our services', 'we offer'). You are friendly, 
             professional, knowledgeable, and enthusiastic about helping users with any questions about TechGropse. 
             When greeting users, you introduce yourself as Anup from TechGropse, your virtual representative.""",
@@ -460,7 +455,7 @@ Respond naturally and informatively. Here are key facts about yourself:
 - You are TechGropse's Virtual AI Assistant
 - You help users learn about TechGropse's services, projects, and capabilities
 - You can answer questions about mobile app development, AI solutions, and company information
-- You can schedule meetings and connect users with the TechGropse team when needed
+- You can connect users with the TechGropse team when needed
 - You're available 24/7 to assist
 - You're powered by advanced AI technology
 
@@ -473,7 +468,7 @@ Generate a natural response as Anup:"""
             return response.content.strip() if hasattr(response, 'content') else str(response).strip()
         except Exception as e:
             logger.error(f"Error generating identity response: {e}")
-            return "Hi! I'm Anup, TechGropse's Virtual AI Assistant. I'm here to help you learn about our services, projects, schedule meetings, and answer any questions you might have about mobile app development and AI solutions!"
+            return "Hi! I'm Anup, TechGropse's Virtual AI Assistant. I'm here to help you learn about our services, projects, and answer any questions you might have about mobile app development and AI solutions!"
     
     def handle_unclear(self, user_input: str) -> str:
         """

@@ -36,7 +36,6 @@ sys.path.insert(0, str(project_root / 'src'))
 # Use async chatbot for parallel processing
 from core.chatbot_async import AsyncChatBot, get_async_chatbot
 from legacy.agent import ContactFormState
-from src.utils.audio_corrections import correct_audio_transcription
 
 # Configure logging
 logging.basicConfig(
@@ -315,11 +314,6 @@ def is_collecting_info(session_id: str) -> tuple:
         'asking_consent'
     ]:
         return True, 'consent'
-    elif state in [
-        ContactFormState.COLLECTING_PROJECT_CONTEXT.value,
-        'collecting_project_context'
-    ]:
-        return True, 'project_context'
     
     return False, None
 
@@ -357,13 +351,13 @@ async def connect(sid, environ, auth=None):
             'session_id': session_id
         }, room=sid)
         
-        # Send initial greeting
+        # Send initial greeting asking for name
         await sio.emit('text_response', {
             'response': initial_message,
             'message': initial_message,
             'type': 'initial_greeting',
-            'show_chatbox': False,
-            'current_field': None
+            'show_chatbox': True,
+            'current_field': 'name'
         }, room=sid)
         
         logger.info(f"✅ Session {session_id[:8]}... created for client {sid}")
@@ -490,13 +484,11 @@ async def text_query(sid, data):
                 'message': 'Previous response interrupted'
             }, room=sid)
         
-        # Extract query text and source
+        # Extract query text
         if isinstance(data, dict):
             query_text = data.get('message', '') or data.get('query', '') or data.get('text', '')
-            request_source = data.get('source', 'text')  # Default to 'text', can be 'voice'
         else:
             query_text = str(data)
-            request_source = 'text'
         
         if not query_text or not query_text.strip():
             await sio.emit('error', {
@@ -504,17 +496,11 @@ async def text_query(sid, data):
             }, room=sid)
             return
         
-        # Apply audio transcription corrections (fix TechGropse variations)
-        original_query = query_text
-        query_text = correct_audio_transcription(query_text)
-        if original_query != query_text:
-            logger.info(f"📝 Audio correction applied: '{original_query}' → '{query_text}'")
-        
         client_data = clients[sid]
         chatbot = client_data['chatbot']
         session_id = client_data['session_id']  # Get session_id
         
-        logger.info(f"💬 Client {sid} ({request_source}): '{query_text}'")
+        logger.info(f"💬 Client {sid}: '{query_text}'")
         
         # Send acknowledgment
         await sio.emit('query_received', {
@@ -616,8 +602,7 @@ async def text_query(sid, data):
                 form_state = chatbot.session_manager.get_contact_form_state(session_id)
                 
                 # Determine if chatbox should be visible
-                # Show chatbox when collecting initial user details, contact information, or project context
-                # BUT NOT in voice-to-voice mode - that should be purely voice-based
+                # Show chatbox when collecting initial user details or contact information
                 show_chatbox = form_state in [
                     'initial_collecting_name',
                     'initial_collecting_email',
@@ -627,15 +612,8 @@ async def text_query(sid, data):
                     'collecting_email',
                     'collecting_phone',
                     'collecting_datetime',
-                    'collecting_timezone',
-                    'collecting_project_context'  # New intelligent project context collection
+                    'collecting_timezone'
                 ]
-                
-                # Override: Never show chatbox for voice-to-voice interface
-                # Voice-to-voice should be purely audio-based conversation
-                if request_source == 'voice':
-                    logger.info(f"🎤 Voice-to-voice mode detected - disabling chatbox for {sid}")
-                    show_chatbox = False
                 
                 # Determine current field being collected
                 current_field = None
@@ -649,11 +627,8 @@ async def text_query(sid, data):
                     current_field = 'datetime'
                 elif form_state == 'collecting_timezone':
                     current_field = 'timezone'
-                elif form_state == 'collecting_project_context':
-                    current_field = 'project_details'
                 
                 # Send text response with chatbox visibility flag
-                logger.info(f"🔍 DEBUG: Sending response to {sid} - Source: {request_source}, show_chatbox: {show_chatbox}, form_state: {form_state}")
                 await sio.emit('text_response', {
                     'message': response,
                     'original_query': query_text,
@@ -753,12 +728,6 @@ async def voice_input(sid, data):
             # Transcribe audio to text
             transcribed_text = await stt_handler.transcribe_audio(audio_bytes, audio_format)
             
-            # Apply audio transcription corrections immediately after transcription
-            original_transcription = transcribed_text
-            transcribed_text = correct_audio_transcription(transcribed_text)
-            if original_transcription != transcribed_text:
-                logger.info(f"🎤 Voice correction applied: '{original_transcription}' → '{transcribed_text}'")
-            
             logger.info(f"📝 Transcribed for {sid}: '{transcribed_text}'")
             
             # Send transcription result
@@ -767,11 +736,8 @@ async def voice_input(sid, data):
             }, room=sid)
             
             # Process as text query (reuse existing logic)
-            # Create a dict with the transcribed text and mark as voice source
-            text_data = {
-                'text': transcribed_text,
-                'source': 'voice'  # Flag to indicate this came from voice input
-            }
+            # Create a dict with the transcribed text
+            text_data = {'text': transcribed_text}
             await text_query(sid, text_data)
             
         except Exception as e:
@@ -819,13 +785,6 @@ async def interim_speech(sid, data):
     
     try:
         partial_text = data.get('text', '') if isinstance(data, dict) else str(data)
-        
-        # Apply audio transcription corrections to interim speech
-        if partial_text:
-            original_partial = partial_text
-            partial_text = correct_audio_transcription(partial_text)
-            if original_partial != partial_text:
-                logger.debug(f"🔮 Interim correction: '{original_partial}' → '{partial_text}'")
         
         # 🚀 MORE AGGRESSIVE: Need less text for speculation (min 5 chars instead of 10)
         if not partial_text or len(partial_text) < 5:

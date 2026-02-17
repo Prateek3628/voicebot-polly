@@ -9,13 +9,14 @@ import sys
 from pathlib import Path
 from typing import List, Dict, Any
 
-# Add project root to Python path
+# Add project root and src to Python path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / 'src'))
+sys.path.insert(0, str(project_root / 'scripts'))
 
 from vectorstore.chromadb_client import ChromaDBClient
-from src.config.settings import config, get_config
+from config import get_config
 from document_loader import document_loader
 
 # Configure logging

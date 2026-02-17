@@ -28,7 +28,6 @@ class SessionManager:
         self.memory_contact_states = {}  # {session_id: state}
         self.memory_contact_data = {}  # {session_id: data}
         self.memory_history = {}  # {session_id: [messages]}
-        self.memory_project_context = {}  # {session_id: project_context}
         
         try:
             self.redis_client = redis.Redis(
@@ -45,7 +44,7 @@ class SessionManager:
             
             # Initialize LLM for semantic matching
             self.llm = ChatOpenAI(
-                model="gpt-4o",
+                model="gpt-4.1-nano",
                 temperature=0.0,
                 openai_api_key=config.openai_api_key
             )
@@ -73,7 +72,7 @@ class SessionManager:
         if not self.redis_available:
             # Store in memory
             self.memory_sessions[session_id] = session_data
-            self.memory_contact_states[session_id] = "idle"
+            self.memory_contact_states[session_id] = "initial_collecting_name"
             self.memory_history[session_id] = []
             logger.info(f"Created new session in memory: {session_id}")
             return session_id
@@ -86,10 +85,10 @@ class SessionManager:
                 json.dumps(session_data)
             )
             
-            # Initialize contact form state to idle (don't collect user details automatically)
-            self.set_contact_form_state(session_id, "idle")
+            # Initialize contact form state to collect user details
+            self.set_contact_form_state(session_id, "initial_collecting_name")
             
-            logger.info(f"Created new session: {session_id} - ready for conversation")
+            logger.info(f"Created new session: {session_id} with initial user details collection")
             return session_id
         except Exception as e:
             logger.error(f"Failed to create session: {e}")
@@ -599,6 +598,122 @@ Respond with only the NUMBER (1, 2, 3, etc.) or NONE:"""
             logger.error(f"Failed to set contact form data: {e}")
             return False
 
+    # =========================================================================
+    # PROJECT ENQUIRY STATE
+    # =========================================================================
+
+    def get_project_enquiry_state(self, session_id: str) -> str:
+        """
+        Get the current project enquiry state for a session.
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            'active' if currently collecting project details, 'idle' otherwise
+        """
+        if not self.redis_available:
+            return self.memory_sessions.get(f"{session_id}:project_enquiry_state", "idle")
+        
+        try:
+            state_key = f"session:{session_id}:project_enquiry_state"
+            state = self.redis_client.get(state_key)
+            return state if state else "idle"
+        except Exception as e:
+            logger.error(f"Failed to get project enquiry state: {e}")
+            return "idle"
+
+    def set_project_enquiry_state(self, session_id: str, state: str) -> bool:
+        """
+        Set the project enquiry state for a session.
+        
+        Args:
+            session_id: Session identifier
+            state: 'active' or 'idle'
+            
+        Returns:
+            True if set successfully, False otherwise
+        """
+        if not self.redis_available:
+            self.memory_sessions[f"{session_id}:project_enquiry_state"] = state
+            return True
+        
+        try:
+            state_key = f"session:{session_id}:project_enquiry_state"
+            self.redis_client.setex(state_key, config.session_timeout, state)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set project enquiry state: {e}")
+            return False
+
+    def get_project_enquiry_data(self, session_id: str) -> dict:
+        """
+        Get the collected project enquiry data for a session.
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            Project enquiry data dictionary (e.g. original_query, project_details)
+        """
+        if not self.redis_available:
+            return self.memory_sessions.get(f"{session_id}:project_enquiry_data", {})
+        
+        try:
+            data_key = f"session:{session_id}:project_enquiry_data"
+            data_str = self.redis_client.get(data_key)
+            return json.loads(data_str) if data_str else {}
+        except Exception as e:
+            logger.error(f"Failed to get project enquiry data: {e}")
+            return {}
+
+    def set_project_enquiry_data(self, session_id: str, data: dict) -> bool:
+        """
+        Set the project enquiry data for a session.
+        
+        Args:
+            session_id: Session identifier
+            data: Project enquiry data dictionary
+            
+        Returns:
+            True if set successfully, False otherwise
+        """
+        if not self.redis_available:
+            self.memory_sessions[f"{session_id}:project_enquiry_data"] = data
+            return True
+        
+        try:
+            data_key = f"session:{session_id}:project_enquiry_data"
+            self.redis_client.setex(data_key, config.session_timeout, json.dumps(data))
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set project enquiry data: {e}")
+            return False
+
+    def clear_project_enquiry(self, session_id: str) -> bool:
+        """
+        Clear project enquiry state and data for a session.
+        
+        Args:
+            session_id: Session identifier
+            
+        Returns:
+            True if cleared successfully, False otherwise
+        """
+        if not self.redis_available:
+            self.memory_sessions.pop(f"{session_id}:project_enquiry_state", None)
+            self.memory_sessions.pop(f"{session_id}:project_enquiry_data", None)
+            return True
+        
+        try:
+            state_key = f"session:{session_id}:project_enquiry_state"
+            data_key = f"session:{session_id}:project_enquiry_data"
+            self.redis_client.delete(state_key, data_key)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to clear project enquiry: {e}")
+            return False
+
     def clear_contact_form(self, session_id: str) -> bool:
         """
         Clear contact form state and data for a session.
@@ -616,79 +731,6 @@ Respond with only the NUMBER (1, 2, 3, etc.) or NONE:"""
             return True
         except Exception as e:
             logger.error(f"Failed to clear contact form: {e}")
-            return False
-    
-    def get_project_context(self, session_id: str) -> dict:
-        """
-        Get project context data for a session.
-        
-        Args:
-            session_id: Session ID
-            
-        Returns:
-            Project context dictionary
-        """
-        if not self.redis_available:
-            return self.memory_project_context.get(session_id, {})
-        
-        try:
-            context_key = f"session:{session_id}:project_context"
-            data = self.redis_client.get(context_key)
-            return json.loads(data) if data else {}
-        except Exception as e:
-            logger.error(f"Failed to get project context: {e}")
-            return {}
-    
-    def set_project_context(self, session_id: str, context: dict) -> bool:
-        """
-        Set project context data for a session.
-        
-        Args:
-            session_id: Session ID
-            context: Project context dictionary
-            
-        Returns:
-            Success status
-        """
-        if not self.redis_available:
-            if not hasattr(self, 'memory_project_context'):
-                self.memory_project_context = {}
-            self.memory_project_context[session_id] = context
-            return True
-            
-        try:
-            context_key = f"session:{session_id}:project_context"
-            self.redis_client.setex(
-                context_key,
-                config.session_timeout,
-                json.dumps(context)
-            )
-            return True
-        except Exception as e:
-            logger.error(f"Failed to set project context: {e}")
-            return False
-    
-    def clear_project_context(self, session_id: str) -> bool:
-        """
-        Clear project context for a session.
-        
-        Args:
-            session_id: Session ID
-            
-        Returns:
-            Success status
-        """
-        if not self.redis_available:
-            if hasattr(self, 'memory_project_context'):
-                self.memory_project_context.pop(session_id, None)
-            return True
-            
-        try:
-            context_key = f"session:{session_id}:project_context"
-            self.redis_client.delete(context_key)
-            return True
-        except Exception as e:
-            logger.error(f"Failed to clear project context: {e}")
             return False
     
     def close(self):

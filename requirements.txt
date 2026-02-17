@@ -1,0 +1,39 @@
+# =============================================================
+# Voicebot-Polly Requirements (Python >=3.11)
+# =============================================================
+# Versions verified against Python 3.11.7
+
+# --- Web Server / Real-time ---
+aiohttp>=3.9.0,<4.0
+python-socketio>=5.11.0,<6.0   # Socket.IO server (import socketio)
+
+# --- Environment ---
+python-dotenv>=1.0.0,<2.0
+
+# --- AI / LLM ---
+openai>=1.0.0,<3.0
+langchain>=1.0.0,<2.0
+langchain-openai>=1.0.0,<2.0
+langchain-core>=1.0.0,<2.0
+langchain-text-splitters>=1.0.0,<2.0
+langchain-huggingface>=1.0.0,<2.0   # HuggingFaceEmbeddings
+
+# --- Embeddings / Reranking ---
+sentence-transformers>=2.2.0,<6.0   # CrossEncoder for reranking
+
+# --- Vector Database ---
+chromadb>=1.0.0,<2.0
+
+# --- Database ---
+pymongo>=4.6.0,<5.0
+redis>=5.0.0,<8.0
+
+# --- AWS (TTS) ---
+boto3>=1.34.0,<2.0
+
+# --- Data Validation / Settings ---
+pydantic>=2.5.0,<3.0
+pydantic-settings>=2.1.0,<3.0
+
+# --- Legacy (only needed if running legacy/agent.py) ---
+crewai>=1.0.0,<2.0

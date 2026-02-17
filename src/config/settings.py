@@ -13,7 +13,7 @@ class Settings(BaseSettings):
     
     # OpenAI Configuration (required for CrewAI)
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o"  # Model for LLM calls
+    openai_model: str = "gpt-4.1-nano"  # Model for LLM calls
     
     # Redis Configuration
     redis_host: str = "localhost"

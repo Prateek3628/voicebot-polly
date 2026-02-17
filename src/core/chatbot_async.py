@@ -6,14 +6,20 @@ import asyncio
 import logging
 from typing import Dict, Any, Optional, Tuple
 import time
+from concurrent.futures import ThreadPoolExecutor
+
+from langchain_openai import ChatOpenAI
 
 from core.agent_async import AsyncChatbotAgent, IntentType, get_async_agent
 from core.session_manager import SessionManager, session_manager
 from core.contact_form_handler import ContactFormHandler
-from core.project_context_handler import ProjectContextHandler
 from legacy.agent import ContactFormState
+from config import config
 
 logger = logging.getLogger(__name__)
+
+# Thread pool for LLM calls
+_enquiry_executor = ThreadPoolExecutor(max_workers=2)
 
 
 class AsyncChatBot:
@@ -26,7 +32,16 @@ class AsyncChatBot:
         """Initialize async chatbot with all components."""
         self.agent = get_async_agent()
         self.session_manager = session_manager
-        self._processing_locks = {}  # Track which sessions are currently processing
+        
+        # LLM for project enquiry decisions (reads history, decides next action)
+        self.enquiry_llm = ChatOpenAI(
+            model="gpt-4.1-nano",
+            temperature=0.3,
+            openai_api_key=config.openai_api_key,
+            max_tokens=400,
+            request_timeout=10
+        )
+        
         logger.info("AsyncChatBot initialized")
     
     def start_session(self) -> Tuple[str, str]:
@@ -35,18 +50,14 @@ class AsyncChatBot:
         Returns: (session_id, welcome_message)
         """
         session_id = self.session_manager.create_session()
-        # Set initial state to ask for consent
-        self.session_manager.set_contact_form_state(session_id, "asking_initial_consent")
-        welcome = "Hello! Welcome to TechGropse. I'm Anup, your virtual assistant. Before we begin, would you like to provide your name and email for a more personalized experience? You can say yes or no."
-        logger.info(f"Started session: {session_id} - asking for initial consent")
+        welcome = "Hello! Welcome to TechGropse, I'm Anup, your virtual assistant. What's your name?"
+        logger.info(f"Started session: {session_id}")
         return session_id, welcome
     
     def end_session(self, session_id: str):
         """End a session and cleanup."""
         if session_id:
             self.session_manager.clear_session(session_id)
-            # Clear conversation history from agent
-            self.agent.clear_conversation_history(session_id)
             logger.info(f"Ended session: {session_id}")
     
     async def process_message_async(
@@ -75,59 +86,11 @@ class AsyncChatBot:
             # Update session activity
             self.session_manager.update_session_activity(session_id)
             
-            # CRITICAL DEDUPLICATION: Check if this exact message was just processed
-            try:
-                history = self.agent.get_conversation_history(session_id)
-                if history and len(history) >= 2:
-                    # Check last 2 messages: should be [user message, bot response]
-                    last_msg = history[-1]
-                    second_last = history[-2] if len(history) >= 2 else None
-                    
-                    if not last_msg or not second_last:
-                        # Skip deduplication if messages are None
-                        pass
-                    else:
-                        # If the second-to-last message is from user and matches current input,
-                        # AND last message is from bot (meaning we already processed this)
-                        # Then this is a duplicate - return the previous bot response
-                        is_bot_last = False
-                        if hasattr(last_msg, 'type'):
-                            is_bot_last = last_msg.type == 'ai'
-                        elif isinstance(last_msg, dict):
-                            is_bot_last = last_msg.get('role') == 'bot'
-                        
-                        if is_bot_last and second_last:
-                            user_msg_content = None
-                            if hasattr(second_last, 'type') and second_last.type == 'human':
-                                user_msg_content = second_last.content if hasattr(second_last, 'content') else None
-                            elif isinstance(second_last, dict) and second_last.get('role') == 'user':
-                                user_msg_content = second_last.get('content')
-                            
-                            if user_msg_content and user_msg_content == user_input:
-                                logger.warning(f"⚠️ DUPLICATE REQUEST DETECTED: '{user_input[:50]}...' - Returning cached response")
-                                # Return the previous bot response
-                                cached_response = ''
-                                if hasattr(last_msg, 'content'):
-                                    cached_response = last_msg.content
-                                elif isinstance(last_msg, dict):
-                                    cached_response = last_msg.get('content', '')
-                                
-                                if cached_response:
-                                    return {
-                                        'response': cached_response,
-                                        'intent': 'cached_duplicate',
-                                        'timing': {'total': 0.001},
-                                        'session_id': session_id,
-                                        'duplicate': True
-                                    }
-            except Exception as e:
-                logger.error(f"Error in deduplication check: {e}")
-            
             # Append user message to history
             try:
                 self.session_manager.append_message_to_history(session_id, 'user', user_input)
-            except Exception as e:
-                logger.error(f"Error appending message to history: {e}")
+            except Exception:
+                pass
             
             # Check contact form state
             form_state = self.session_manager.get_contact_form_state(session_id)
@@ -136,139 +99,8 @@ class AsyncChatBot:
                 self.session_manager.set_contact_form_state(session_id, ContactFormState.IDLE.value)
                 form_state = ContactFormState.IDLE.value
             
-            # Handle initial consent asking (NEW FLOW)
-            if form_state == ContactFormState.ASKING_INITIAL_CONSENT.value:
-                user_lower = user_input.lower().strip()
-                
-                # Check if user is asking about a project instead of answering consent
-                is_project_inquiry = any(phrase in user_lower for phrase in [
-                    'build an app', 'build a website', 'develop', 'create an app',
-                    'make an app', 'need an app', 'cost', 'price', 'timeline'
-                ])
-                
-                if is_project_inquiry:
-                    # User is asking about a project, skip consent and help them
-                    self.session_manager.set_contact_form_state(session_id, ContactFormState.IDLE.value)
-                    # Continue to normal flow below (don't return here)
-                # Check for affirmative responses to consent question
-                elif any(word in user_lower for word in ['yes', 'yeah', 'yep', 'sure', 'okay', 'ok', 'fine', 'please']):
-                    # User wants to provide details - collect name and email in ONE question
-                    self.session_manager.set_contact_form_state(session_id, ContactFormState.COLLECTING_NAME_AND_EMAIL.value)
-                    return {
-                        'response': "Great! Please provide your name and email address.",
-                        'intent': 'CONTACT_FORM',
-                        'requires_contact_form': True
-                    }
-                else:
-                    # User declined - skip data collection, go straight to helping them
-                    self.session_manager.set_contact_form_state(session_id, ContactFormState.IDLE.value)
-                    return {
-                        'response': "No problem! How can I help you today?",
-                        'intent': 'GENERAL',
-                        'requires_contact_form': False
-                    }
-            
-            # Handle collecting name and email together (NEW FLOW - handles partial input)
-            if form_state == ContactFormState.COLLECTING_NAME_AND_EMAIL.value:
-                # Use LLM to extract name and email from user's response
-                from langchain_openai import ChatOpenAI
-                from config.settings import config
-                llm = ChatOpenAI(model=config.openai_model, temperature=0)
-                extraction_prompt = f"""Extract the name and email from this user input: "{user_input}"
-
-Return ONLY a JSON object like:
-{{"name": "extracted name or null", "email": "extracted email or null"}}
-
-Examples:
-- "prateek" → {{"name": "Prateek", "email": null}}
-- "My email is prateek@example.com" → {{"name": null, "email": "prateek@example.com"}}
-- "John and john@example.com" → {{"name": "John", "email": "john@example.com"}}
-
-If you can't find something, return null for that field."""
-                
-                try:
-                    extraction_result = llm.invoke(extraction_prompt)
-                    import json
-                    import re
-                    
-                    result_text = extraction_result.content.strip()
-                    # Try to extract JSON from response
-                    json_match = re.search(r'\{.*\}', result_text, re.DOTALL)
-                    if json_match:
-                        result_text = json_match.group(0)
-                    
-                    extracted = json.loads(result_text)
-                    
-                    name = extracted.get('name')
-                    email = extracted.get('email')
-                    
-                    form_data = self.session_manager.get_contact_form_data(session_id)
-                    
-                    # Update what we have
-                    if name:
-                        form_data['name'] = name
-                    if email:
-                        form_data['email'] = email
-                    
-                    self.session_manager.set_contact_form_data(session_id, form_data)
-                    
-                    # Check what's complete
-                    has_name = bool(form_data.get('name'))
-                    has_email = bool(form_data.get('email'))
-                    
-                    if has_name and has_email:
-                        # Got everything!
-                        self.session_manager.set_contact_form_state(session_id, ContactFormState.IDLE.value)
-                        return {
-                            'response': f"Thank you, {form_data['name']}! I've noted your email as {form_data['email']}. How can I assist you today?",
-                            'intent': 'CONTACT_FORM',
-                            'requires_contact_form': False
-                        }
-                    elif has_name and not has_email:
-                        # Got name, still need email
-                        return {
-                            'response': f"Thank you, {form_data['name']}! Could you please also provide your email address?",
-                            'intent': 'CONTACT_FORM',
-                            'requires_contact_form': True
-                        }
-                    elif not has_name and has_email:
-                        # Got email, still need name
-                        return {
-                            'response': f"Great! I've noted your email. Could you please also tell me your name?",
-                            'intent': 'CONTACT_FORM',
-                            'requires_contact_form': True
-                        }
-                    else:
-                        # Didn't extract anything
-                        return {
-                            'response': "I couldn't quite catch that. Could you please provide your name and email? You can say something like 'My name is John and my email is john@example.com', or provide them one at a time.",
-                            'intent': 'CONTACT_FORM',
-                            'requires_contact_form': True
-                        }
-                except Exception as e:
-                    logger.error(f"Error extracting name/email: {e}")
-                    return {
-                        'response': "I couldn't quite catch that. Could you please provide your name first? Just say your name.",
-                        'intent': 'CONTACT_FORM',
-                        'requires_contact_form': True
-                    }
-            
             # Handle contact form flow (not parallelized - sequential state machine)
-            # Exclude project context states from regular contact form handling
-            contact_form_states = [
-                ContactFormState.INITIAL_COLLECTING_NAME.value,
-                ContactFormState.INITIAL_COLLECTING_EMAIL.value,
-                ContactFormState.INITIAL_COLLECTING_PHONE.value,
-                ContactFormState.ASKING_CONSENT.value,
-                ContactFormState.ASKING_SCHEDULE_CHANGE.value,
-                ContactFormState.COLLECTING_DATETIME.value,
-                ContactFormState.COLLECTING_TIMEZONE.value,
-                ContactFormState.COLLECTING_NAME.value,
-                ContactFormState.COLLECTING_EMAIL.value,
-                ContactFormState.COLLECTING_PHONE.value
-            ]
-            
-            if form_state in contact_form_states:
+            if form_state != ContactFormState.IDLE.value:
                 form_data = self.session_manager.get_contact_form_data(session_id)
                 result = ContactFormHandler.handle_contact_form_step(
                     form_state=form_state,
@@ -295,168 +127,38 @@ If you can't find something, return null for that field."""
                     'session_id': session_id
                 }
             
-            # Handle project context collection flow (intelligent, not hardcoded)
-            if form_state == ContactFormState.COLLECTING_PROJECT_CONTEXT.value:
-                project_context = self.session_manager.get_project_context(session_id) or {}
-                logger.info(f"Retrieved project context for session {session_id}: {project_context}")
-                
-                # Get conversation history to avoid asking redundant questions
-                conversation_history = []
-                try:
-                    conversation_history = self.agent.get_conversation_history(session_id)
-                except Exception:
-                    pass
-                
-                result = ProjectContextHandler.handle_project_inquiry_intelligently(
+            # =========================================================
+            # PROJECT ENQUIRY FLOW — user is responding to follow-up
+            # =========================================================
+            project_state = self.session_manager.get_project_enquiry_state(session_id)
+            
+            if project_state == 'active':
+                result = await self._handle_project_enquiry_response(
                     user_input=user_input,
-                    existing_context=project_context,
-                    conversation_history=conversation_history
+                    session_id=session_id
                 )
                 
-                logger.info(f"Project inquiry result: needs_more={result.get('needs_more_context')}, context={result.get('project_context')}")
-                
-                # Update session based on intelligent analysis
-                if result.get('needs_more_context', False):
-                    # Still need more context, stay in collecting state
-                    self.session_manager.set_contact_form_state(session_id, ContactFormState.COLLECTING_PROJECT_CONTEXT.value)
-                else:
-                    # Context complete, move to idle
-                    self.session_manager.set_contact_form_state(session_id, ContactFormState.IDLE.value)
-                
-                self.session_manager.set_project_context(session_id, result['project_context'])
-                logger.info(f"Saved project context for session {session_id}: {result['project_context']}")
-                
-                response = result['response']
-                
-                # CRITICAL: Add to agent's conversation history so it's available for next turn
-                self.agent.add_to_conversation_history(session_id, user_input, response)
+                response = result.get('response', '')
                 
                 try:
                     self.session_manager.append_message_to_history(session_id, 'bot', response)
                 except Exception:
                     pass
                 
-                return {
-                    'response': response,
-                    'intent': 'project_inquiry',
-                    'timing': {'total': time.time() - total_start},
-                    'session_id': session_id
-                }
-            
-            # CHECK FOR PROJECT INQUIRY FIRST - Before doing expensive RAG!
-            # Quick check: Does this look like a project inquiry that needs context collection?
-            try:
-                user_lower = user_input.lower()
-                looks_like_project_inquiry = any(phrase in user_lower for phrase in [
-                    'i want to build', 'build an app', 'build a website', 'develop an app', 
-                    'create an app', 'make an app', 'need an app', 'looking to build',
-                    'cost', 'price', 'timeline', 'how much', 'how long', 'estimate'
-                ])
+                result['session_id'] = session_id
+                result['timing'] = {'total': time.time() - total_start}
                 
-                if looks_like_project_inquiry:
-                    # Check if we already have context or need to collect it
-                    project_context = self.session_manager.get_project_context(session_id) or {}
-                    conversation_history = []
-                    try:
-                        conversation_history = self.agent.get_conversation_history(session_id)
-                    except Exception:
-                        pass
-                    
-                    # Analyze context needs
-                    result_analysis = ProjectContextHandler.handle_project_inquiry_intelligently(
-                        user_input=user_input,
-                        existing_context=project_context,
-                        conversation_history=conversation_history
-                    )
-                    
-                    if result_analysis.get('needs_more_context', False):
-                        # Need to collect more context - DON'T do RAG yet!
-                        self.session_manager.set_contact_form_state(
-                            session_id, ContactFormState.COLLECTING_PROJECT_CONTEXT.value
-                        )
-                        response = result_analysis['response']
-                        self.session_manager.set_project_context(session_id, result_analysis['project_context'])
-                        
-                        # Add to agent's conversation history
-                        self.agent.add_to_conversation_history(session_id, user_input, response)
-                        
-                        try:
-                            self.session_manager.append_message_to_history(session_id, 'bot', response)
-                        except Exception:
-                            pass
-                        
-                        return {
-                            'response': response,
-                            'intent': 'project_inquiry_collecting',
-                            'timing': {'total': time.time() - total_start},
-                            'session_id': session_id
-                        }
-                    else:
-                        # We have enough context - NOW do RAG with enhanced query
-                        enhanced_query = ProjectContextHandler.get_contextual_prompt(user_input, result_analysis['project_context'])
-                        logger.info(f"Context complete, running RAG with enhanced query: {enhanced_query[:100]}...")
-                        # Continue to parallel processing below with enhanced query
-                        user_input = enhanced_query
-            except Exception as e:
-                logger.error(f"Error in project inquiry pre-check: {e}", exc_info=True)
-                # Continue to normal processing if pre-check fails
+                logger.info(f"Session {session_id}: Project enquiry response, Total={result['timing']['total']:.2f}s")
+                return result
             
-            # PARALLEL PROCESSING PIPELINE (RAG + Intent + Response)
+            # PARALLEL PROCESSING PIPELINE
             result = await self.agent.process_parallel(
                 user_input=user_input,
-                session_id=session_id,
                 fast_mode=fast_mode
             )
             
             response = result.get('response', '')
             intent = result.get('intent', '')
-            
-            # Legacy handler for project_inquiry intent (if it comes from intent classification)
-            # This is a fallback - the above check should catch most cases
-            if intent == 'project_inquiry':
-                project_context = self.session_manager.get_project_context(session_id) or {}
-                
-                # Get conversation history to avoid asking redundant questions
-                conversation_history = []
-                try:
-                    conversation_history = self.agent.get_conversation_history(session_id)
-                except Exception:
-                    pass
-                
-                # Use intelligent analysis to handle the inquiry
-                result_analysis = ProjectContextHandler.handle_project_inquiry_intelligently(
-                    user_input=user_input,
-                    existing_context=project_context,
-                    conversation_history=conversation_history
-                )
-                
-                if result_analysis.get('needs_more_context', False):
-                    # Need to collect more context
-                    self.session_manager.set_contact_form_state(
-                        session_id, ContactFormState.COLLECTING_PROJECT_CONTEXT.value
-                    )
-                    response = result_analysis['response']
-                    self.session_manager.set_project_context(session_id, result_analysis['project_context'])
-                    
-                    # Add to agent's conversation history
-                    self.agent.add_to_conversation_history(session_id, user_input, response)
-                else:
-                    # We have enough context, enhance the query with context for better RAG results
-                    enhanced_query = ProjectContextHandler.get_contextual_prompt(user_input, result_analysis['project_context'])
-                    # Re-run RAG with enhanced query
-                    enhanced_result = await self.agent.generate_response_with_context(
-                        enhanced_query, session_id, result_analysis['project_context']
-                    )
-                    if enhanced_result:
-                        result.update(enhanced_result)
-                        response = result.get('response', '')
-                    else:
-                        response = result_analysis['response']
-                    
-                    self.session_manager.set_project_context(session_id, result_analysis['project_context'])
-                
-                # Update result with the intelligent response
-                result['response'] = response
             
             # Check for contact request trigger - immediately ask for availability
             if intent == 'contact_request' or response == "TRIGGER_CONTACT_FORM":
@@ -481,6 +183,32 @@ If you can't find something, return null for that field."""
                 # Update result with the actual response
                 result['response'] = response
             
+            # Check for project enquiry trigger — ask one follow-up about features
+            if intent == 'project_enquiry' or response == "TRIGGER_PROJECT_ENQUIRY":
+                # Before triggering follow-up, check if project details were already
+                # discussed in this session. If yes, this is a follow-up question about
+                # the existing project — answer it directly via RAG, don't re-ask.
+                already_discussed = await self._has_project_context_in_history(session_id, user_input)
+                
+                if already_discussed:
+                    # User already shared project details earlier — treat as a contextual query
+                    logger.info(f"Project context already in history, treating as contextual QUERY")
+                    result = await self._answer_project_followup_query(user_input, session_id)
+                    response = result.get('response', '')
+                    result['intent'] = 'project_enquiry_followup'
+                else:
+                    # First time project enquiry — ask for features
+                    project_data = {
+                        'original_query': user_input
+                    }
+                    self.session_manager.set_project_enquiry_data(session_id, project_data)
+                    self.session_manager.set_project_enquiry_state(session_id, 'active')
+                    
+                    # Generate a natural follow-up question using LLM
+                    response = await self._generate_project_followup(user_input)
+                    result['response'] = response
+                    result['intent'] = 'project_enquiry'
+            
             # Append bot response to history
             try:
                 self.session_manager.append_message_to_history(session_id, 'bot', response)
@@ -501,6 +229,339 @@ If you can't find something, return null for that field."""
                 'intent': 'error',
                 'timing': {'total': time.time() - total_start},
                 'session_id': session_id
+            }
+    
+    # =========================================================================
+    # PROJECT ENQUIRY HELPERS
+    # =========================================================================
+
+    async def _generate_project_followup(self, user_input: str) -> str:
+        """
+        Generate a natural follow-up question asking about project features/details.
+        Uses LLM — no hardcoded question text.
+        
+        Args:
+            user_input: The user's original project enquiry message
+            
+        Returns:
+            A natural follow-up question string
+        """
+        try:
+            prompt = f"""You are Anup, TechGropse's friendly virtual assistant. The user just expressed interest in building a project/app/software.
+
+User's message: "{user_input}"
+
+Your task: Ask ONE short, natural follow-up question to understand what features or functionality they want in their project. Keep it conversational, warm, and to the point (1-2 sentences max). Do not ask about budget, timeline, or platform — only about what the project should do (features/scope).
+
+Response:"""
+
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                _enquiry_executor,
+                lambda: self.enquiry_llm.invoke(prompt)
+            )
+            
+            result = response.content.strip() if hasattr(response, 'content') else str(response).strip()
+            logger.info(f"Project enquiry follow-up generated: {result[:80]}...")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error generating project follow-up: {e}")
+            return "That sounds interesting! Could you tell me a bit more about the key features you'd like in your project?"
+
+    async def _has_project_context_in_history(self, session_id: str, user_input: str) -> bool:
+        """
+        Check if the user has already discussed project details in this session.
+        Uses LLM to read conversation history and decide if project context exists.
+        
+        Args:
+            session_id: Session identifier
+            user_input: The current user message
+            
+        Returns:
+            True if project details were already discussed, False if this is a fresh enquiry
+        """
+        try:
+            # Get last 6 pairs (12 messages) of conversation history
+            history = self.session_manager.get_session_history(session_id, limit=12)
+            
+            if not history or len(history) < 2:
+                return False
+            
+            # Format history for LLM
+            history_text = ""
+            for entry in history:
+                role = "User" if entry.get('role') == 'user' else "Anup"
+                history_text += f"{role}: {entry.get('message', '')}\n"
+            
+            prompt = f"""Analyze this conversation history between a user and Anup (TechGropse's assistant).
+
+Conversation history:
+{history_text}
+
+The user's latest message: "{user_input}"
+
+TASK: Has the user ALREADY described their project requirements or features in the conversation above? 
+- Look for messages where the user described what they want to build, what features they need, or any project specifications.
+- If the user previously shared project details (even basic ones) and is now asking a follow-up question about that same project (like tech stack, timeline, cost, AI integration, etc.), answer YES.
+- If this is the FIRST time the user is mentioning they want to build something and has NOT yet described any features or requirements, answer NO.
+
+Respond with ONLY: YES or NO"""
+
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                _enquiry_executor,
+                lambda: self.enquiry_llm.invoke(prompt)
+            )
+            
+            answer = response.content.strip().upper() if hasattr(response, 'content') else str(response).strip().upper()
+            
+            result = 'YES' in answer
+            logger.info(f"Project context in history check: {result} (answer: {answer})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error checking project context in history: {e}")
+            return False
+
+    async def _answer_project_followup_query(self, user_input: str, session_id: str) -> Dict[str, Any]:
+        """
+        Answer a follow-up question about an existing project discussion.
+        Uses conversation history + RAG to give a contextual, informed response.
+        
+        Args:
+            user_input: The user's follow-up question
+            session_id: Session identifier
+            
+        Returns:
+            Dict with response, intent, context_docs, timing
+        """
+        start = time.time()
+        
+        try:
+            # Get conversation history for context
+            history = self.session_manager.get_session_history(session_id, limit=12)
+            
+            history_text = ""
+            for entry in history:
+                role = "User" if entry.get('role') == 'user' else "Anup"
+                history_text += f"{role}: {entry.get('message', '')}\n"
+            
+            # Run RAG with the user's question for TechGropse-specific info
+            context_docs = await self.agent.retrieve_documents_async(user_input)
+            
+            context_text = ""
+            if context_docs:
+                context_text = "\n\n".join([
+                    f"[{doc.get('metadata', {}).get('source', 'Unknown')}]\n{doc['content'][:400]}"
+                    for doc in context_docs[:3]
+                ])
+            
+            response_prompt = f"""You are Anup, TechGropse's friendly virtual assistant.
+
+The user has been discussing a project they want to build. Here is the conversation so far:
+{history_text}
+
+The user's latest question: "{user_input}"
+
+Relevant TechGropse information:
+{context_text if context_text else "No specific documents found, use your general knowledge about TechGropse as a software development company."}
+
+Instructions:
+- Answer the user's question directly based on the conversation context and the retrieved information
+- The user has already described their project — do NOT ask for more features or project details
+- Keep it conversational and helpful, 2-4 sentences max
+- Use "we at TechGropse", "our team" when referring to the company
+- If the question is about tech stack, timeline, cost, or approach — give a specific, helpful answer
+
+Response:"""
+
+            loop = asyncio.get_event_loop()
+            response_result = await loop.run_in_executor(
+                _enquiry_executor,
+                lambda: self.enquiry_llm.invoke(response_prompt)
+            )
+            
+            response = response_result.content.strip() if hasattr(response_result, 'content') else str(response_result).strip()
+            
+            elapsed = time.time() - start
+            logger.info(f"Project follow-up query answered in {elapsed:.2f}s: {response[:80]}...")
+            
+            return {
+                'response': response,
+                'intent': 'project_enquiry_followup',
+                'context_docs': context_docs,
+                'timing': {'total': elapsed}
+            }
+            
+        except Exception as e:
+            logger.error(f"Error answering project follow-up query: {e}")
+            return {
+                'response': "That's a great question! Let me connect you with our team who can give you detailed guidance on this.",
+                'intent': 'project_enquiry_followup',
+                'context_docs': [],
+                'timing': {'total': time.time() - start}
+            }
+
+    async def _handle_project_enquiry_response(
+        self, 
+        user_input: str, 
+        session_id: str
+    ) -> Dict[str, Any]:
+        """
+        Handle the user's response after we asked the project follow-up question.
+        
+        Uses LLM with last 6 message pairs to decide:
+        1. User provided project details (even vague) → accept, run RAG, give enriched response
+        2. User switched to a different topic → exit enquiry, process normally
+        
+        Args:
+            user_input: User's response to the follow-up question
+            session_id: Session identifier
+            
+        Returns:
+            Dict with response, intent, timing
+        """
+        start = time.time()
+        
+        try:
+            # Get last 6 pairs (12 messages) of conversation history
+            history = self.session_manager.get_session_history(session_id, limit=12)
+            
+            # Format history for LLM context
+            history_text = ""
+            for entry in history:
+                role = "User" if entry.get('role') == 'user' else "Anup"
+                history_text += f"{role}: {entry.get('message', '')}\n"
+            
+            # Get stored project data
+            project_data = self.session_manager.get_project_enquiry_data(session_id)
+            original_query = project_data.get('original_query', '')
+            
+            # LLM decides: did the user provide project details or switch topics?
+            decision_prompt = f"""You are analyzing a conversation. The user originally asked about building a project: "{original_query}"
+The assistant asked a follow-up about features/details. Now the user has responded.
+
+Recent conversation history:
+{history_text}
+
+The user's latest message: "{user_input}"
+
+TASK: Classify the user's latest response into ONE of these:
+- PROJECT_DETAILS: The user provided any details about their project (features, scope, description, even vague answers like "basic features", "standard stuff", "simple app", "just the usual features"). ANY response that relates to describing the project counts as PROJECT_DETAILS.
+- SWITCHED_TOPIC: The user completely changed the subject and is asking about something unrelated to their project (e.g., "who are you?", "bye", "contact me", "what services do you offer?").
+
+Respond with ONLY: PROJECT_DETAILS or SWITCHED_TOPIC"""
+
+            loop = asyncio.get_event_loop()
+            decision_response = await loop.run_in_executor(
+                _enquiry_executor,
+                lambda: self.enquiry_llm.invoke(decision_prompt)
+            )
+            
+            decision = decision_response.content.strip().upper() if hasattr(decision_response, 'content') else str(decision_response).strip().upper()
+            
+            logger.info(f"Project enquiry decision: {decision} for input: '{user_input[:50]}...'")
+            
+            if 'SWITCHED' in decision:
+                # User switched topics — exit project enquiry, reprocess normally
+                self.session_manager.set_project_enquiry_state(session_id, 'idle')
+                self.session_manager.clear_project_enquiry(session_id)
+                
+                logger.info(f"User switched topics during project enquiry, reprocessing normally")
+                
+                # Reprocess the message through the normal pipeline
+                result = await self.agent.process_parallel(
+                    user_input=user_input,
+                    fast_mode=False
+                )
+                
+                response = result.get('response', '')
+                intent = result.get('intent', '')
+                
+                # Handle contact/other triggers from normal flow
+                if intent == 'contact_request' or response == "TRIGGER_CONTACT_FORM":
+                    user_details = self.session_manager.get_contact_form_data(session_id) or {}
+                    user_details['original_query'] = user_input
+                    self.session_manager.set_contact_form_data(session_id, user_details)
+                    self.session_manager.set_contact_form_state(
+                        session_id, ContactFormState.COLLECTING_DATETIME.value
+                    )
+                    response = "Great! I'll connect you with our team. When would be the best time for them to reach out? Please include your timezone and country."
+                    result['response'] = response
+                
+                return result
+            
+            # User provided project details — collect and generate enriched response via RAG
+            self.session_manager.set_project_enquiry_state(session_id, 'idle')
+            
+            # Build a comprehensive query combining original enquiry + feature details
+            combined_query = f"{original_query}. Features/details: {user_input}"
+            
+            # Run RAG with the combined context to get TechGropse-specific info
+            context_docs = await self.agent.retrieve_documents_async(combined_query)
+            
+            # Build context from RAG results
+            context_text = ""
+            if context_docs:
+                context_text = "\n\n".join([
+                    f"[{doc.get('metadata', {}).get('source', 'Unknown')}]\n{doc['content'][:400]}"
+                    for doc in context_docs[:3]
+                ])
+            
+            # Generate a rich response using conversation history + RAG context
+            response_prompt = f"""You are Anup, TechGropse's friendly virtual assistant.
+
+The user wants to build a project. Here is the conversation so far:
+{history_text}
+
+User's original request: "{original_query}"
+User's project details/features: "{user_input}"
+
+Relevant TechGropse capabilities and services:
+{context_text if context_text else "No specific documents found, use your general knowledge about TechGropse as a software development company."}
+
+Instructions:
+- Acknowledge the user's project idea and the details they shared
+- Give a helpful, informed response about how TechGropse can help with this specific project
+- Mention relevant services, technologies, or expertise from the context if available
+- Keep it conversational and warm, 3-4 sentences max
+- Use "we at TechGropse", "our team" when referring to the company
+- Do NOT ask for more features/details — the user has already provided them
+- End with something encouraging or suggest next steps (like connecting with the team)
+
+Response:"""
+
+            response_result = await loop.run_in_executor(
+                _enquiry_executor,
+                lambda: self.enquiry_llm.invoke(response_prompt)
+            )
+            
+            response = response_result.content.strip() if hasattr(response_result, 'content') else str(response_result).strip()
+            
+            # Clear project enquiry data
+            self.session_manager.clear_project_enquiry(session_id)
+            
+            elapsed = time.time() - start
+            logger.info(f"Project enquiry resolved in {elapsed:.2f}s: {response[:80]}...")
+            
+            return {
+                'response': response,
+                'intent': 'project_enquiry',
+                'context_docs': context_docs,
+                'timing': {'total': elapsed}
+            }
+            
+        except Exception as e:
+            logger.error(f"Error handling project enquiry response: {e}")
+            # Fallback — clear state and give a generic response
+            self.session_manager.set_project_enquiry_state(session_id, 'idle')
+            self.session_manager.clear_project_enquiry(session_id)
+            return {
+                'response': "Thanks for sharing! We at TechGropse have expertise in building projects like this. Would you like me to connect you with our team to discuss further?",
+                'intent': 'project_enquiry',
+                'context_docs': [],
+                'timing': {'total': time.time() - start}
             }
     
     async def process_interim_async(
