@@ -14,6 +14,7 @@ from core.agent_async import AsyncChatbotAgent, IntentType, get_async_agent
 from core.session_manager import SessionManager, session_manager
 from core.contact_form_handler import ContactFormHandler
 from legacy.agent import ContactFormState
+from database.mongodb_client import MongoDBClient
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,17 @@ class AsyncChatBot:
         self.agent = get_async_agent()
         self.session_manager = session_manager
         
+        # Initialize MongoDB client for saving conversations and contact requests
+        self.mongodb_client = None
+        try:
+            if config.mongodb_uri:
+                self.mongodb_client = MongoDBClient(config.mongodb_uri, config.mongodb_database)
+                logger.info("MongoDB client initialized for conversation storage")
+            else:
+                logger.warning("MongoDB URI not configured — conversations will not be saved")
+        except Exception as e:
+            logger.error(f"Failed to initialize MongoDB client: {e}")
+        
         # LLM for project enquiry decisions (reads history, decides next action)
         self.enquiry_llm = ChatOpenAI(
             model="gpt-4.1-nano",
@@ -51,12 +63,36 @@ class AsyncChatBot:
         """
         session_id = self.session_manager.create_session()
         welcome = "Hello! Welcome to TechGropse, I'm Anup, your virtual assistant. What's your name?"
+        
+        # Save welcome message to history so it appears in the MongoDB conversation log
+        try:
+            self.session_manager.append_message_to_history(session_id, 'bot', welcome)
+        except Exception:
+            pass
+        
         logger.info(f"Started session: {session_id}")
         return session_id, welcome
     
     def end_session(self, session_id: str):
-        """End a session and cleanup."""
+        """End a session — save conversation to MongoDB, then cleanup."""
         if session_id:
+            # Save conversation to MongoDB before clearing
+            if self.mongodb_client:
+                try:
+                    history = self.session_manager.get_session_history(session_id)
+                    user_details = self.session_manager.get_contact_form_data(session_id)
+                    if history:
+                        self.mongodb_client.save_session_conversation(
+                            session_id=session_id,
+                            conversation_history=history,
+                            user_details=user_details
+                        )
+                        logger.info(f"Saved {len(history)} messages to MongoDB for session {session_id}")
+                    else:
+                        logger.info(f"No conversation history to save for session {session_id}")
+                except Exception as e:
+                    logger.error(f"Failed to save conversation to MongoDB: {e}")
+            
             self.session_manager.clear_session(session_id)
             logger.info(f"Ended session: {session_id}")
     
@@ -107,7 +143,7 @@ class AsyncChatBot:
                     user_input=user_input,
                     form_data=form_data,
                     session_id=session_id,
-                    mongodb_client=None
+                    mongodb_client=self.mongodb_client
                 )
                 
                 self.session_manager.set_contact_form_state(session_id, result['next_state'])
@@ -126,6 +162,78 @@ class AsyncChatBot:
                     'timing': {'total': time.time() - total_start},
                     'session_id': session_id
                 }
+            
+            # =========================================================
+            # PENDING CONNECT — bot offered to connect, check if user confirms
+            # =========================================================
+            if self.session_manager.get_pending_connect(session_id):
+                consent = ContactFormHandler.understand_consent(user_input)
+                
+                if consent == 'yes':
+                    # User confirmed — clear flag and trigger scheduling form
+                    self.session_manager.set_pending_connect(session_id, False)
+                    
+                    user_details = self.session_manager.get_contact_form_data(session_id) or {}
+                    user_details['original_query'] = user_input
+                    
+                    has_schedule = user_details.get('preferred_datetime') and user_details.get('timezone')
+                    
+                    if has_schedule:
+                        self.session_manager.set_contact_form_data(session_id, user_details)
+                        self.session_manager.set_contact_form_state(
+                            session_id, ContactFormState.ASKING_SCHEDULE_CHANGE.value
+                        )
+                        response = f"Sure! You previously scheduled a call for {user_details.get('preferred_datetime')}. Would you like to keep this time or change it?"
+                    else:
+                        self.session_manager.set_contact_form_data(session_id, user_details)
+                        self.session_manager.set_contact_form_state(
+                            session_id, ContactFormState.COLLECTING_DATETIME.value
+                        )
+                        response = "Great! When would be the best time for our team to reach out? Please include your timezone and country. For example: 'Tomorrow 3 PM IST India' or 'Monday 10 AM EST USA'"
+                    
+                    try:
+                        self.session_manager.append_message_to_history(session_id, 'bot', response)
+                    except Exception:
+                        pass
+                    
+                    return {
+                        'response': response,
+                        'intent': 'contact_form',
+                        'timing': {'total': time.time() - total_start},
+                        'session_id': session_id
+                    }
+                elif consent == 'no':
+                    # User declined — clear flag, acknowledge, continue normally
+                    self.session_manager.set_pending_connect(session_id, False)
+                    response = "No problem at all! Is there anything else I can help you with?"
+                    
+                    try:
+                        self.session_manager.append_message_to_history(session_id, 'bot', response)
+                    except Exception:
+                        pass
+                    
+                    return {
+                        'response': response,
+                        'intent': 'contact_declined',
+                        'timing': {'total': time.time() - total_start},
+                        'session_id': session_id
+                    }
+                else:
+                    # Unclear — ask again instead of silently falling through
+                    # Keep pending_connect=True so the next message retries
+                    response = "Just to confirm — would you like me to connect you with our team? A simple yes or no works!"
+                    
+                    try:
+                        self.session_manager.append_message_to_history(session_id, 'bot', response)
+                    except Exception:
+                        pass
+                    
+                    return {
+                        'response': response,
+                        'intent': 'contact_confirm_retry',
+                        'timing': {'total': time.time() - total_start},
+                        'session_id': session_id
+                    }
             
             # =========================================================
             # PROJECT ENQUIRY FLOW — user is responding to follow-up
@@ -172,7 +280,7 @@ class AsyncChatBot:
                     self.session_manager.set_contact_form_state(
                         session_id, ContactFormState.ASKING_SCHEDULE_CHANGE.value
                     )
-                    response = f"Sure! You previously scheduled a call for {user_details.get('preferred_datetime')} ({user_details.get('timezone')}). Would you like to keep this time or change it?"
+                    response = f"Sure! You previously scheduled a call for {user_details.get('preferred_datetime')}. Would you like to keep this time or change it?"
                 else:
                     self.session_manager.set_contact_form_data(session_id, user_details)
                     self.session_manager.set_contact_form_state(
@@ -214,6 +322,22 @@ class AsyncChatBot:
                 self.session_manager.append_message_to_history(session_id, 'bot', response)
             except Exception:
                 pass
+            
+            # If the bot response offers to connect with the team, set pending_connect
+            # so the next "yes" from the user triggers the scheduling form
+            response_lower = response.lower()
+            if any(phrase in response_lower for phrase in [
+                'connect you with', 'connect you to', 'schedule a call',
+                'would you like us to contact', 'like to schedule',
+                'connect with our team', 'connect with our experts',
+                'reach out to you', 'get in touch',
+                'would you like to connect', 'shall i connect',
+                'like me to connect', 'want me to connect',
+                'connect you with our', 'our team will',
+                'set up a call', 'arrange a call',
+                'book a call', 'schedule a meeting',
+            ]):
+                self.session_manager.set_pending_connect(session_id, True)
             
             result['session_id'] = session_id
             result['timing']['total'] = time.time() - total_start
@@ -528,7 +652,7 @@ Instructions:
 - Keep it conversational and warm, 3-4 sentences max
 - Use "we at TechGropse", "our team" when referring to the company
 - Do NOT ask for more features/details — the user has already provided them
-- End with something encouraging or suggest next steps (like connecting with the team)
+- End by asking if the user would like to schedule a call with our team to discuss further
 
 Response:"""
 
@@ -541,6 +665,9 @@ Response:"""
             
             # Clear project enquiry data
             self.session_manager.clear_project_enquiry(session_id)
+            
+            # Set pending_connect so if user confirms, we trigger the scheduling form
+            self.session_manager.set_pending_connect(session_id, True)
             
             elapsed = time.time() - start
             logger.info(f"Project enquiry resolved in {elapsed:.2f}s: {response[:80]}...")

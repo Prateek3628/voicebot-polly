@@ -85,10 +85,10 @@ class SessionManager:
                 json.dumps(session_data)
             )
             
-            # Initialize contact form state to collect user details
+            # Initialize contact form state to collect name first
             self.set_contact_form_state(session_id, "initial_collecting_name")
             
-            logger.info(f"Created new session: {session_id} with initial user details collection")
+            logger.info(f"Created new session: {session_id}")
             return session_id
         except Exception as e:
             logger.error(f"Failed to create session: {e}")
@@ -731,6 +731,41 @@ Respond with only the NUMBER (1, 2, 3, etc.) or NONE:"""
             return True
         except Exception as e:
             logger.error(f"Failed to clear contact form: {e}")
+            return False
+
+    # =========================================================================
+    # PENDING CONNECT STATE (bot offered to connect, waiting for user confirm)
+    # =========================================================================
+
+    def get_pending_connect(self, session_id: str) -> bool:
+        """Check if bot is waiting for user to confirm a connect offer."""
+        if not self.redis_available:
+            return self.memory_sessions.get(f"{session_id}:pending_connect", False)
+        try:
+            key = f"session:{session_id}:pending_connect"
+            val = self.redis_client.get(key)
+            return val == "true"
+        except Exception as e:
+            logger.error(f"Failed to get pending_connect: {e}")
+            return False
+
+    def set_pending_connect(self, session_id: str, value: bool) -> bool:
+        """Set or clear the pending connect flag."""
+        if not self.redis_available:
+            if value:
+                self.memory_sessions[f"{session_id}:pending_connect"] = True
+            else:
+                self.memory_sessions.pop(f"{session_id}:pending_connect", None)
+            return True
+        try:
+            key = f"session:{session_id}:pending_connect"
+            if value:
+                self.redis_client.setex(key, config.session_timeout, "true")
+            else:
+                self.redis_client.delete(key)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set pending_connect: {e}")
             return False
     
     def close(self):

@@ -42,16 +42,18 @@ class ContactFormHandler:
         """
         try:
             llm = ContactFormHandler.get_llm()
-            prompt = f"""You are analyzing a user's response to determine if they are giving consent to be contacted.
+            prompt = f"""You are analyzing a user's response to determine if they are giving consent to be contacted or to proceed.
 
 User's response: "{user_input}"
 
-The user was asked: "Would you like us to contact you?"
+The user was asked if they want to connect with the team or schedule a call.
 
 Classify the response as:
-- YES: if user agrees, accepts, or wants to be contacted (e.g., "yes", "sure", "please", "that would be great", "okay", "yeah", "go ahead", "I'd like that", "please do")
-- NO: if user declines or doesn't want to be contacted (e.g., "no", "nope", "not now", "no thanks", "I'm good", "not interested", "maybe later")
-- UNCLEAR: if the response doesn't clearly indicate yes or no
+- YES: if user agrees, accepts, or wants to proceed (e.g., "yes", "sure", "please", "that would be great", "okay", "yeah", "go ahead", "yes go ahead", "I'd like that", "please do", "yes please", "do it", "let's do it", "absolutely", "of course", "why not", "sounds good", "perfect")
+- NO: if user declines or doesn't want to proceed (e.g., "no", "nope", "not now", "no thanks", "I'm good", "not interested", "maybe later", "skip", "nevermind")
+- UNCLEAR: ONLY if the response is completely unrelated or ambiguous
+
+Important: Lean towards YES if the user seems even mildly positive. Only use UNCLEAR as a last resort.
 
 Respond with ONLY: YES, NO, or UNCLEAR"""
 
