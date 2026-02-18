@@ -137,31 +137,50 @@ class AsyncChatBot:
             
             # Handle contact form flow (not parallelized - sequential state machine)
             if form_state != ContactFormState.IDLE.value:
-                form_data = self.session_manager.get_contact_form_data(session_id)
-                result = ContactFormHandler.handle_contact_form_step(
-                    form_state=form_state,
-                    user_input=user_input,
-                    form_data=form_data,
-                    session_id=session_id,
-                    mongodb_client=self.mongodb_client
-                )
-                
-                self.session_manager.set_contact_form_state(session_id, result['next_state'])
-                self.session_manager.set_contact_form_data(session_id, result['form_data'])
-                
-                response = result['response']
-                
-                try:
-                    self.session_manager.append_message_to_history(session_id, 'bot', response)
-                except Exception:
-                    pass
-                
-                return {
-                    'response': response,
-                    'intent': 'contact_form',
-                    'timing': {'total': time.time() - total_start},
-                    'session_id': session_id
+                # --- Escape hatch: detect cancel / topic change ---
+                # Before routing to the form handler, check if the user wants
+                # to abandon the form or is asking something unrelated.
+                # This prevents users getting trapped in form states.
+                escapable_states = {
+                    ContactFormState.ASKING_CONSENT.value,
+                    ContactFormState.ASKING_SCHEDULE_CHANGE.value,
+                    ContactFormState.COLLECTING_DATETIME.value,
                 }
+                if form_state in escapable_states:
+                    wants_exit = ContactFormHandler.detect_form_cancellation(user_input, form_state)
+                    if wants_exit:
+                        logger.info(f"[{session_id}] User cancelled form flow from state {form_state}")
+                        self.session_manager.set_contact_form_state(session_id, ContactFormState.IDLE.value)
+                        form_state = ContactFormState.IDLE.value
+                        # Fall through to normal processing below
+                
+                # If still in form state (user did NOT cancel), route to form handler
+                if form_state != ContactFormState.IDLE.value:
+                    form_data = self.session_manager.get_contact_form_data(session_id)
+                    result = ContactFormHandler.handle_contact_form_step(
+                        form_state=form_state,
+                        user_input=user_input,
+                        form_data=form_data,
+                        session_id=session_id,
+                        mongodb_client=self.mongodb_client
+                    )
+                    
+                    self.session_manager.set_contact_form_state(session_id, result['next_state'])
+                    self.session_manager.set_contact_form_data(session_id, result['form_data'])
+                    
+                    response = result['response']
+                    
+                    try:
+                        self.session_manager.append_message_to_history(session_id, 'bot', response)
+                    except Exception:
+                        pass
+                    
+                    return {
+                        'response': response,
+                        'intent': 'contact_form',
+                        'timing': {'total': time.time() - total_start},
+                        'session_id': session_id
+                    }
             
             # =========================================================
             # PENDING CONNECT — bot offered to connect, check if user confirms
@@ -219,21 +238,11 @@ class AsyncChatBot:
                         'session_id': session_id
                     }
                 else:
-                    # Unclear — ask again instead of silently falling through
-                    # Keep pending_connect=True so the next message retries
-                    response = "Just to confirm — would you like me to connect you with our team? A simple yes or no works!"
-                    
-                    try:
-                        self.session_manager.append_message_to_history(session_id, 'bot', response)
-                    except Exception:
-                        pass
-                    
-                    return {
-                        'response': response,
-                        'intent': 'contact_confirm_retry',
-                        'timing': {'total': time.time() - total_start},
-                        'session_id': session_id
-                    }
+                    # Unclear — user likely moved on to a new question/topic
+                    # Clear pending_connect and let the message flow through normal processing
+                    self.session_manager.set_pending_connect(session_id, False)
+                    logger.info(f"Pending connect: unclear consent for '{user_input}', clearing flag and processing normally")
+                    # Fall through to normal processing pipeline below
             
             # =========================================================
             # PROJECT ENQUIRY FLOW — user is responding to follow-up
@@ -425,10 +434,11 @@ Conversation history:
 
 The user's latest message: "{user_input}"
 
-TASK: Has the user ALREADY described their project requirements or features in the conversation above? 
-- Look for messages where the user described what they want to build, what features they need, or any project specifications.
-- If the user previously shared project details (even basic ones) and is now asking a follow-up question about that same project (like tech stack, timeline, cost, AI integration, etc.), answer YES.
-- If this is the FIRST time the user is mentioning they want to build something and has NOT yet described any features or requirements, answer NO.
+TASK: Has the user ALREADY discussed a project they want to build in the conversation above?
+- Look for ANY earlier messages where the user talked about building/developing something, described features, or discussed project details.
+- If a project was discussed AND the user's latest message relates to that same project (even indirectly, like "for my app?", "what about the cost?", "which technology?", "how long would it take?"), answer YES.
+- Short follow-ups like "for my app?", "for this project?", "and the timeline?" are follow-ups if a project was discussed earlier — answer YES.
+- Only answer NO if there is truly NO prior project discussion in the conversation history.
 
 Respond with ONLY: YES or NO"""
 

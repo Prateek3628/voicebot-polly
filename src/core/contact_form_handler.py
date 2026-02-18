@@ -30,6 +30,71 @@ class ContactFormHandler:
         return cls._llm
     
     @staticmethod
+    def detect_form_cancellation(user_input: str, current_state: str) -> bool:
+        """
+        Detect if user wants to cancel/abandon the current form flow,
+        or is asking something completely unrelated (topic change).
+        
+        Args:
+            user_input: User's natural language response
+            current_state: Current form state name (e.g. 'COLLECTING_DATETIME')
+            
+        Returns:
+            True if user wants to exit the form, False to continue the form flow
+        """
+        # Quick keyword check first to avoid unnecessary LLM calls
+        cancel_phrases = [
+            'leave it', 'skip', 'cancel', 'never mind', 'nevermind',
+            'forget it', 'stop', 'quit', "don't want", "dont want",
+            'no thanks', 'not interested', 'not now', 'maybe later',
+            'drop it', 'abort', "i don't want to", "i dont want to",
+            'back', 'go back', 'exit'
+        ]
+        user_lower = user_input.lower().strip()
+        if any(phrase in user_lower for phrase in cancel_phrases):
+            return True
+        
+        # Use LLM for ambiguous cases (topic changes like "tell me about yourself")
+        try:
+            llm = ContactFormHandler.get_llm()
+            prompt = f"""You are analyzing whether a user wants to CONTINUE providing information for a form, or wants to EXIT/CANCEL and ask something else.
+
+The user is currently in a form step: {current_state}
+User's message: "{user_input}"
+
+Context: The bot was asking the user for scheduling/contact information (like datetime, timezone, name, email, phone, or yes/no consent). The user responded with the message above.
+
+Determine if the user:
+- CONTINUE: The message is a genuine attempt to answer the form question (providing a date, time, name, email, phone, or answering yes/no)
+- EXIT: The user wants to cancel, skip, leave the form, OR is asking a completely unrelated question/topic that has nothing to do with the form
+
+Examples of EXIT:
+- "tell me about yourself" (unrelated topic)
+- "what services do you offer" (unrelated topic)
+- "I want to know about mobile apps" (unrelated topic)
+- "leave it" (cancellation)
+- "how much does it cost" (unrelated topic)
+
+Examples of CONTINUE:
+- "tomorrow 3pm IST" (providing datetime)
+- "john@email.com" (providing email)
+- "yes" / "sure" (consent)
+- "+91 9876543210" (providing phone)
+- "Monday morning" (providing datetime)
+
+Respond with ONLY: CONTINUE or EXIT"""
+
+            response = llm.invoke(prompt)
+            result = response.content.strip().upper() if hasattr(response, 'content') else str(response).strip().upper()
+            
+            if 'EXIT' in result:
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error detecting form cancellation: {e}")
+            return False
+    
+    @staticmethod
     def understand_consent(user_input: str) -> str:
         """
         Use LLM to understand if user is giving consent (yes/no).
